@@ -6,6 +6,16 @@ export interface RoutingRule {
   reasoning: ReasoningLevel;
 }
 
+export interface OllamaConfig {
+  baseUrl: string;
+  model?: string;
+}
+
+export interface DockerMistralConfig {
+  baseUrl: string;
+  model: string;
+}
+
 export interface ManyAgentsConfig {
   maxConcurrentWorkers: number;
   defaultProvider: string;
@@ -16,7 +26,18 @@ export interface ManyAgentsConfig {
   maxRetries: number;
   unhealthyAfterFailures: number;
   routing: RoutingRule[];
+  ollama: OllamaConfig;
+  mistral: DockerMistralConfig;
 }
+
+export const DEFAULT_OLLAMA_CONFIG: OllamaConfig = {
+  baseUrl: "http://127.0.0.1:11434",
+};
+
+export const DEFAULT_MISTRAL_CONFIG: DockerMistralConfig = {
+  baseUrl: "http://127.0.0.1:12434/engines/v1",
+  model: "ai/mistral",
+};
 
 export const DEFAULT_CONFIG: ManyAgentsConfig = {
   maxConcurrentWorkers: 2,
@@ -33,6 +54,8 @@ export const DEFAULT_CONFIG: ManyAgentsConfig = {
     { types: ["code"], reasoning: "medium" },
     { types: ["other"], reasoning: "medium" },
   ],
+  ollama: DEFAULT_OLLAMA_CONFIG,
+  mistral: DEFAULT_MISTRAL_CONFIG,
 };
 
 export async function loadConfig(path = ".pi-many-agents.json"): Promise<ManyAgentsConfig> {
@@ -42,9 +65,24 @@ export async function loadConfig(path = ".pi-many-agents.json"): Promise<ManyAge
       ...DEFAULT_CONFIG,
       ...raw,
       routing: raw.routing ?? DEFAULT_CONFIG.routing,
+      ollama: {
+        ...DEFAULT_OLLAMA_CONFIG,
+        ...raw.ollama,
+      },
+      mistral: {
+        ...DEFAULT_MISTRAL_CONFIG,
+        ...raw.mistral,
+      },
     };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...DEFAULT_CONFIG, routing: [...DEFAULT_CONFIG.routing] };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return {
+        ...DEFAULT_CONFIG,
+        routing: [...DEFAULT_CONFIG.routing],
+        ollama: { ...DEFAULT_OLLAMA_CONFIG },
+        mistral: { ...DEFAULT_MISTRAL_CONFIG },
+      };
+    }
     throw error;
   }
 }
