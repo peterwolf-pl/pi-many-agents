@@ -34,6 +34,7 @@ export class DockerMistralProvider implements AgentProvider {
   private readonly dockerBin: string;
   private readonly signal?: AbortSignal;
   private readonly fetchImpl: typeof fetch;
+  private readonly activeAbortControllers = new Map<string, AbortController>();
 
   constructor(options: DockerMistralOptions = {}) {
     this.baseUrl = options.baseUrl ?? DEFAULTS.baseUrl;
@@ -69,36 +70,64 @@ export class DockerMistralProvider implements AgentProvider {
 
   async execute(worker: WorkerHandle, task: AgentTask): Promise<ProviderRunResult> {
     const started = Date.now();
-    await this.ensure();
-    const response = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: task.modelPolicy.model ?? this.model,
-        stream: false,
-        messages: [{ role: "user", content: renderTaskPacket(task) }],
-      }),
-      signal: AbortSignal.any([this.signal, AbortSignal.timeout(task.modelPolicy.timeoutMs ?? 120_000)].filter(Boolean) as AbortSignal[]),
-    });
-    if (!response.ok) {
-      const error = `mistral docker HTTP ${response.status}`;
-      return this.failed(worker, task, started, error);
+    const workerAc = new AbortController();
+    this.activeAbortControllers.set(worker.id, workerAc);
+
+    try {
+      await this.ensure();
+      const signals = [this.signal, workerAc.signal, AbortSignal.timeout(task.modelPolicy.timeoutMs ?? 120_000)].filter(
+        (s): s is AbortSignal => Boolean(s)
+      );
+      const response = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: task.modelPolicy.model ?? this.model,
+          stream: false,
+          messages: [{ role: "user", content: renderTaskPacket(task) }],
+        }),
+        signal: AbortSignal.any(signals),
+      });
+      if (!response.ok) {
+        const error = `mistral docker HTTP ${response.status}`;
+        return this.failed(worker, task, started, error);
+      }
+      const body = (await response.json()) as {
+        message?: { content?: string };
+        prompt_eval_count?: number;
+        eval_count?: number;
+      };
+      const report = wrapTextReport({
+        taskId: task.id,
+        workerId: worker.id,
+        text: body.message?.content ?? "",
+        durationMs: Date.now() - started,
+        status: body.message?.content ? "completed" : "failed",
+        error: body.message?.content ? undefined : "empty mistral response",
+        usage: { inputTokens: body.prompt_eval_count, outputTokens: body.eval_count },
+      });
+      return { report, process: emptyProcess(), handle: worker };
+    } catch (err) {
+      const isCancelled = workerAc.signal.aborted || this.signal?.aborted;
+      return {
+        report: wrapTextReport({
+          taskId: task.id,
+          workerId: worker.id,
+          text: "",
+          durationMs: Date.now() - started,
+          status: isCancelled ? "partial" : "failed",
+          error: isCancelled ? "cancelled" : (err as Error).message,
+        }),
+        process: emptyProcess(),
+        handle: worker,
+      };
+    } finally {
+      this.activeAbortControllers.delete(worker.id);
     }
-    const body = await response.json() as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
-    const report = wrapTextReport({
-      taskId: task.id,
-      workerId: worker.id,
-      text: body.message?.content ?? "",
-      durationMs: Date.now() - started,
-      status: body.message?.content ? "completed" : "failed",
-      error: body.message?.content ? undefined : "empty mistral response",
-      usage: { inputTokens: body.prompt_eval_count, outputTokens: body.eval_count },
-    });
-    return { report, process: emptyProcess(), handle: worker };
   }
 
-  async cancel(): Promise<void> {
-    this.signal?.throwIfAborted();
+  async cancel(worker: WorkerHandle): Promise<void> {
+    this.activeAbortControllers.get(worker.id)?.abort();
   }
 
   private async ensure(): Promise<void> {

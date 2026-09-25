@@ -16,6 +16,7 @@ const THINKING: Record<ReasoningLevel, string> = {
 export class PiProvider implements AgentProvider {
   readonly name = "pi";
   private readonly processes = new ProcessManager();
+  private readonly activeAbortControllers = new Map<string, AbortController>();
 
   private readonly config: Pick<ManyAgentsConfig, "piBinary">;
   private readonly signal?: AbortSignal;
@@ -72,13 +73,25 @@ export class PiProvider implements AgentProvider {
       args.push("--model", effectiveModel);
     }
     args.push("--", renderTaskPacket(task));
-    const managed = await this.processes.run({
-      command: this.config.piBinary,
-      args,
-      cwd: task.workspace,
-      timeoutMs: task.modelPolicy.timeoutMs ?? 120_000,
-      signal: this.signal,
-    });
+    const workerAc = new AbortController();
+    this.activeAbortControllers.set(worker.id, workerAc);
+
+    const onGlobalAbort = () => workerAc.abort();
+    this.signal?.addEventListener("abort", onGlobalAbort, { once: true });
+
+    let managed;
+    try {
+      managed = await this.processes.run({
+        command: this.config.piBinary,
+        args,
+        cwd: task.workspace,
+        timeoutMs: task.modelPolicy.timeoutMs ?? 120_000,
+        signal: workerAc.signal,
+      });
+    } finally {
+      this.signal?.removeEventListener("abort", onGlobalAbort);
+      this.activeAbortControllers.delete(worker.id);
+    }
     const text = assistantText(managed.stdout);
     const usage = usageFromJsonl(managed.stdout);
     const error = managed.timedOut
@@ -100,7 +113,12 @@ export class PiProvider implements AgentProvider {
     return { report, process: managed, handle: { ...worker, pid: managed.pid } };
   }
 
-  async cancel(): Promise<void> {
+  async cancel(worker: WorkerHandle): Promise<void> {
+    this.activeAbortControllers.get(worker.id)?.abort();
+  }
+
+  async cleanup(): Promise<void> {
+    for (const ac of this.activeAbortControllers.values()) ac.abort();
     await this.processes.cleanup();
   }
 }

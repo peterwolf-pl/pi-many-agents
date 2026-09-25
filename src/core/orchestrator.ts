@@ -36,6 +36,7 @@ export class Orchestrator {
 
   async run(tasks: AgentTask[], options: RunOptions = {}): Promise<RunResult> {
     validateRunOptions(options);
+    this.cancelledTasks.clear();
     const prepared = options.dedupe === false ? { tasks, dropped: [] } : dedupeTasks(tasks);
     assertAcyclic(prepared.tasks);
     const maxConcurrent = options.maxConcurrentWorkers ?? this.config.maxConcurrentWorkers;
@@ -55,7 +56,7 @@ export class Orchestrator {
       rows.set(dropped.id, { id: dropped.id, state: "cancelled", title: dropped.id });
       await logger.write(createMessage("task.cancelled", "orchestrator", { reason: "duplicate", kept: dropped.kept }, dropped.id));
     }
-    let stop = false;
+    let stop = Boolean(options.signal?.aborted);
     const onAbort = () => {
       stop = true;
     };
@@ -72,74 +73,97 @@ export class Orchestrator {
       const plan = routeTask(task, this.config);
       const providerName = options.provider ?? plan.provider;
       const job = (async () => {
-        const provider = this.providers.get(providerName);
-        if (!provider) {
-          const report = failedReport(task.id, "orchestrator", `unknown provider: ${providerName}`);
-          reports.push(report);
-          queue.mark(task.id, "failed");
-          rows.set(task.id, { id: task.id, state: "failed", title: task.title });
-          await publish(createMessage("worker.failed", "orchestrator", { error: report.error }, task.id));
-          await publish(createMessage("report.created", "orchestrator", { ...report }, task.id));
-          return;
-        }
-        if (!(await provider.available())) {
-          const report = failedReport(task.id, providerName, `provider unavailable: ${providerName}`);
-          reports.push(report);
-          queue.mark(task.id, "failed");
-          rows.set(task.id, { id: task.id, state: "failed", title: task.title });
-          await publish(createMessage("worker.failed", providerName, { error: report.error }, task.id));
-          await publish(createMessage("report.created", providerName, { ...report }, task.id));
-          return;
-        }
-        if (!health.healthy(providerName)) {
-          const report = failedReport(task.id, providerName, `provider unhealthy: ${providerName}`);
-          reports.push(report);
-          queue.mark(task.id, "failed");
-          rows.set(task.id, { id: task.id, state: "failed", title: task.title });
-          await publish(createMessage("worker.failed", providerName, { error: report.error, health: health.snapshot() }, task.id));
-          return;
-        }
-        const worker = manager.create(providerName, plan.model);
-        rows.set(task.id, { id: task.id, state: "running", title: task.title });
-        health.record(providerName, "started");
-        await publish(createMessage("worker.started", worker.id, { provider: providerName, model: plan.model, pid: worker.pid }, task.id));
-        await publish(createMessage("task.started", worker.id, { plan }, task.id));
-        let report = failedReport(task.id, worker.id, "worker did not run");
-        const attempts = Math.max(0, maxRetries) + 1;
-        for (let attempt = 1; attempt <= attempts; attempt += 1) {
-          if (this.cancelledTasks.has(task.id) || stop) {
-            report = failedReport(task.id, worker.id, "cancelled");
-            report.status = "partial";
-            worker.state = "cancelled";
-            break;
+        try {
+          const provider = this.providers.get(providerName);
+          if (!provider) {
+            const report = failedReport(task.id, "orchestrator", `unknown provider: ${providerName}`);
+            reports.push(report);
+            queue.mark(task.id, "failed");
+            rows.set(task.id, { id: task.id, state: "failed", title: task.title });
+            await publish(createMessage("worker.failed", "orchestrator", { error: report.error }, task.id));
+            await publish(createMessage("report.created", "orchestrator", { ...report }, task.id));
+            return;
           }
-          report = await worker.run({ ...task, modelPolicy: { ...task.modelPolicy, model: plan.model, reasoning: plan.reasoning, timeoutMs: plan.timeoutMs } });
-          if (!retryable(report) || attempt === attempts) break;
-          await publish(createMessage("task.progress", worker.id, { attempt, retry: true, error: report.error }, task.id));
+
+          let isAvailable = false;
+          try {
+            isAvailable = await provider.available();
+          } catch (availErr) {
+            const report = failedReport(task.id, providerName, `provider available check threw: ${(availErr as Error).message}`);
+            reports.push(report);
+            queue.mark(task.id, "failed");
+            rows.set(task.id, { id: task.id, state: "failed", title: task.title });
+            await publish(createMessage("worker.failed", providerName, { error: report.error }, task.id));
+            await publish(createMessage("report.created", providerName, { ...report }, task.id));
+            return;
+          }
+
+          if (!isAvailable) {
+            const report = failedReport(task.id, providerName, `provider unavailable: ${providerName}`);
+            reports.push(report);
+            queue.mark(task.id, "failed");
+            rows.set(task.id, { id: task.id, state: "failed", title: task.title });
+            await publish(createMessage("worker.failed", providerName, { error: report.error }, task.id));
+            await publish(createMessage("report.created", providerName, { ...report }, task.id));
+            return;
+          }
+          if (!health.healthy(providerName)) {
+            const report = failedReport(task.id, providerName, `provider unhealthy: ${providerName}`);
+            reports.push(report);
+            queue.mark(task.id, "failed");
+            rows.set(task.id, { id: task.id, state: "failed", title: task.title });
+            await publish(createMessage("worker.failed", providerName, { error: report.error, health: health.snapshot() }, task.id));
+            return;
+          }
+          const worker = manager.create(providerName, plan.model);
+          rows.set(task.id, { id: task.id, state: "running", title: task.title });
+          health.record(providerName, "started");
+          await publish(createMessage("worker.started", worker.id, { provider: providerName, model: plan.model, pid: worker.pid }, task.id));
+          await publish(createMessage("task.started", worker.id, { plan }, task.id));
+          let report = failedReport(task.id, worker.id, "worker did not run");
+          const attempts = Math.max(0, maxRetries) + 1;
+          for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            if (this.cancelledTasks.has(task.id) || stop) {
+              report = failedReport(task.id, worker.id, "cancelled");
+              report.status = "partial";
+              worker.state = "cancelled";
+              break;
+            }
+            report = await worker.run({ ...task, modelPolicy: { ...task.modelPolicy, model: plan.model, reasoning: plan.reasoning, timeoutMs: plan.timeoutMs } });
+            if (!retryable(report) || attempt === attempts) break;
+            await publish(createMessage("task.progress", worker.id, { attempt, retry: true, error: report.error }, task.id));
+          }
+          health.record(providerName, report.status === "failed" ? "failed" : worker.state === "cancelled" ? "cancelled" : "completed");
+          reports.push(report);
+          const terminal = report.status === "failed" ? "failed" : worker.state === "cancelled" ? "cancelled" : "completed";
+          queue.mark(task.id, terminal === "cancelled" ? "cancelled" : terminal === "failed" ? "failed" : "completed");
+          rows.set(task.id, { id: task.id, state: worker.state, title: task.title });
+          await publish(createMessage(terminal === "failed" ? "task.failed" : terminal === "cancelled" ? "task.cancelled" : "task.completed", worker.id, {}, task.id));
+          await publish(createMessage("report.created", worker.id, { ...report }, task.id));
+          await logger.write({
+            kind: "task.telemetry",
+            taskId: task.id,
+            workerId: worker.id,
+            provider: providerName,
+            model: plan.model,
+            reasoning: plan.reasoning,
+            start: worker.startedAt,
+            end: Date.now(),
+            duration: report.durationMs,
+            status: report.status,
+            inputTokens: report.usage?.inputTokens,
+            outputTokens: report.usage?.outputTokens,
+            estimatedCost: report.usage?.estimatedCost,
+            pid: worker.pid,
+          });
+        } catch (jobErr) {
+          const report = failedReport(task.id, providerName, `task execution error: ${(jobErr as Error).message}`);
+          reports.push(report);
+          queue.mark(task.id, "failed");
+          rows.set(task.id, { id: task.id, state: "failed", title: task.title });
+          await publish(createMessage("task.failed", "orchestrator", { error: report.error }, task.id));
+          await publish(createMessage("report.created", "orchestrator", { ...report }, task.id));
         }
-        health.record(providerName, report.status === "failed" ? "failed" : worker.state === "cancelled" ? "cancelled" : "completed");
-        reports.push(report);
-        const terminal = report.status === "failed" ? "failed" : worker.state === "cancelled" ? "cancelled" : "completed";
-        queue.mark(task.id, terminal === "cancelled" ? "cancelled" : terminal === "failed" ? "failed" : "completed");
-        rows.set(task.id, { id: task.id, state: worker.state, title: task.title });
-        await publish(createMessage(terminal === "failed" ? "task.failed" : terminal === "cancelled" ? "task.cancelled" : "task.completed", worker.id, {}, task.id));
-        await publish(createMessage("report.created", worker.id, { ...report }, task.id));
-        await logger.write({
-          kind: "task.telemetry",
-          taskId: task.id,
-          workerId: worker.id,
-          provider: providerName,
-          model: plan.model,
-          reasoning: plan.reasoning,
-          start: worker.startedAt,
-          end: Date.now(),
-          duration: report.durationMs,
-          status: report.status,
-          inputTokens: report.usage?.inputTokens,
-          outputTokens: report.usage?.outputTokens,
-          estimatedCost: report.usage?.estimatedCost,
-          pid: worker.pid,
-        });
       })().finally(() => {
         inflight.delete(job);
       });
@@ -180,6 +204,14 @@ export class Orchestrator {
           report.status = "partial";
           reports.push(report);
           await publish(createMessage("task.cancelled", "orchestrator", {}, task.id));
+        }
+      }
+      for (const task of prepared.tasks) {
+        if (!reports.some((report) => report.taskId === task.id)) {
+          const report = failedReport(task.id, "orchestrator", stop ? "cancelled" : "unresolved");
+          if (stop) report.status = "partial";
+          reports.push(report);
+          rows.set(task.id, { id: task.id, state: stop ? "cancelled" : "failed", title: task.title });
         }
       }
     } finally {

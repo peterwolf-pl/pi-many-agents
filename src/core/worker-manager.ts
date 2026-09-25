@@ -1,12 +1,13 @@
 import type { AgentProvider } from "../providers/types.ts";
-import type { AgentReport, AgentTask, Worker, WorkerState } from "../types.ts";
+import type { AgentReport, AgentTask, Worker, WorkerHandle, WorkerState } from "../types.ts";
 
 export class ManagedWorker implements Worker {
   state: WorkerState = "idle";
   taskId?: string;
   startedAt?: number;
   pid?: number;
-  private current?: { cancel: () => Promise<void> };
+  private currentHandle?: WorkerHandle;
+  private cancelled = false;
 
   readonly id: string;
   readonly provider: string;
@@ -21,22 +22,54 @@ export class ManagedWorker implements Worker {
   }
 
   async run(task: AgentTask): Promise<AgentReport> {
-    this.state = "starting";
     this.taskId = task.id;
     this.startedAt = Date.now();
-    const handle = await this.backend.spawn({
-      id: this.id,
-      provider: this.provider,
-      model: this.model,
-      workspace: task.workspace,
-      timeoutMs: task.modelPolicy.timeoutMs ?? 120_000,
-    });
-    this.state = "running";
-    this.current = { cancel: () => this.backend.cancel(handle) };
+    if (this.cancelled) {
+      this.state = "cancelled";
+      return {
+        taskId: task.id,
+        workerId: this.id,
+        status: "partial",
+        summary: "cancelled before start",
+        findings: [],
+        warnings: ["cancelled before start"],
+        durationMs: 0,
+        error: "cancelled",
+      };
+    }
+
+    this.state = "starting";
     try {
+      const handle = await this.backend.spawn({
+        id: this.id,
+        provider: this.provider,
+        model: this.model,
+        workspace: task.workspace,
+        timeoutMs: task.modelPolicy.timeoutMs ?? 120_000,
+      });
+      this.currentHandle = handle;
+
+      if (this.cancelled) {
+        this.state = "cancelled";
+        await this.backend.cancel(handle);
+        return {
+          taskId: task.id,
+          workerId: this.id,
+          status: "partial",
+          summary: "cancelled before execution",
+          findings: [],
+          warnings: ["cancelled before execution"],
+          durationMs: Date.now() - (this.startedAt ?? Date.now()),
+          error: "cancelled",
+        };
+      }
+
+      this.state = "running";
       const result = await this.backend.execute(handle, task);
       this.pid = result.handle.pid;
-      this.state = result.report.status === "failed" ? "failed" : result.process.cancelled ? "cancelled" : "completed";
+      if (!this.cancelled) {
+        this.state = result.report.status === "failed" ? "failed" : result.process.cancelled ? "cancelled" : "completed";
+      }
       return result.report;
     } catch (error) {
       this.state = "failed";
@@ -51,13 +84,19 @@ export class ManagedWorker implements Worker {
         error: error instanceof Error ? error.message : "provider failure",
       };
     } finally {
-      this.current = undefined;
+      this.currentHandle = undefined;
     }
   }
 
   async cancel(): Promise<void> {
+    if (this.state === "completed" || this.state === "failed") {
+      return;
+    }
+    this.cancelled = true;
     this.state = "cancelled";
-    await this.current?.cancel();
+    if (this.currentHandle) {
+      await this.backend.cancel(this.currentHandle);
+    }
   }
 }
 
@@ -85,11 +124,14 @@ export class WorkerManager {
   }
 
   async cancelAll(): Promise<void> {
-    await Promise.all(this.workers.map((worker) => worker.cancel()));
+    const toCancel = this.workers.filter((w) => w.state !== "completed" && w.state !== "failed");
+    await Promise.all(toCancel.map((worker) => worker.cancel()));
   }
 
   async cancelTask(taskId: string): Promise<void> {
-    const running = this.workers.filter((worker) => worker.taskId === taskId && (worker.state === "running" || worker.state === "starting"));
+    const running = this.workers.filter(
+      (worker) => worker.taskId === taskId && (worker.state === "running" || worker.state === "starting")
+    );
     await Promise.all(running.map((worker) => worker.cancel()));
   }
 }

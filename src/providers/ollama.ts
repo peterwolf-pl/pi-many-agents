@@ -17,6 +17,7 @@ export class OllamaProvider implements AgentProvider {
   private readonly baseUrl: string;
   private readonly signal?: AbortSignal;
   private readonly fetchImpl: typeof fetch;
+  private readonly activeAbortControllers = new Map<string, AbortController>();
 
   constructor(options: OllamaProviderOptions) {
     this.name = options.name;
@@ -64,34 +65,64 @@ export class OllamaProvider implements AgentProvider {
     if (!(await this.available())) {
       return this.failed(worker, task, started, `ollama model ${this.model} is not loaded`);
     }
-    const response = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: task.modelPolicy.model ?? this.model,
-        stream: false,
-        messages: [{ role: "user", content: renderTaskPacket(task) }],
-      }),
-      signal: AbortSignal.any([this.signal, AbortSignal.timeout(task.modelPolicy.timeoutMs ?? 120_000)].filter((item): item is AbortSignal => Boolean(item))),
-    });
-    if (!response.ok) return this.failed(worker, task, started, `ollama HTTP ${response.status}`);
-    const body = await response.json() as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
-    return {
-      report: wrapTextReport({
-        taskId: task.id,
-        workerId: worker.id,
-        text: body.message?.content ?? "",
-        durationMs: Date.now() - started,
-        status: body.message?.content ? "completed" : "failed",
-        error: body.message?.content ? undefined : "empty ollama response",
-        usage: { inputTokens: body.prompt_eval_count, outputTokens: body.eval_count },
-      }),
-      process: { stdout: "", stderr: "", events: [], exitCode: 0, signal: null, timedOut: false, cancelled: false },
-      handle: worker,
-    };
+    const workerAc = new AbortController();
+    this.activeAbortControllers.set(worker.id, workerAc);
+
+    try {
+      const signals = [this.signal, workerAc.signal, AbortSignal.timeout(task.modelPolicy.timeoutMs ?? 120_000)].filter(
+        (item): item is AbortSignal => Boolean(item)
+      );
+      const response = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: task.modelPolicy.model ?? this.model,
+          stream: false,
+          messages: [{ role: "user", content: renderTaskPacket(task) }],
+        }),
+        signal: AbortSignal.any(signals),
+      });
+      if (!response.ok) return this.failed(worker, task, started, `ollama HTTP ${response.status}`);
+      const body = (await response.json()) as {
+        message?: { content?: string };
+        prompt_eval_count?: number;
+        eval_count?: number;
+      };
+      return {
+        report: wrapTextReport({
+          taskId: task.id,
+          workerId: worker.id,
+          text: body.message?.content ?? "",
+          durationMs: Date.now() - started,
+          status: body.message?.content ? "completed" : "failed",
+          error: body.message?.content ? undefined : "empty ollama response",
+          usage: { inputTokens: body.prompt_eval_count, outputTokens: body.eval_count },
+        }),
+        process: { stdout: "", stderr: "", events: [], exitCode: 0, signal: null, timedOut: false, cancelled: false },
+        handle: worker,
+      };
+    } catch (err) {
+      const isCancelled = workerAc.signal.aborted || this.signal?.aborted;
+      return {
+        report: wrapTextReport({
+          taskId: task.id,
+          workerId: worker.id,
+          text: "",
+          durationMs: Date.now() - started,
+          status: isCancelled ? "partial" : "failed",
+          error: isCancelled ? "cancelled" : (err as Error).message,
+        }),
+        process: { stdout: "", stderr: "", events: [], exitCode: 1, signal: null, timedOut: false, cancelled: isCancelled },
+        handle: worker,
+      };
+    } finally {
+      this.activeAbortControllers.delete(worker.id);
+    }
   }
 
-  async cancel(): Promise<void> {}
+  async cancel(worker: WorkerHandle): Promise<void> {
+    this.activeAbortControllers.get(worker.id)?.abort();
+  }
 
   private async tags(): Promise<string[]> {
     try {

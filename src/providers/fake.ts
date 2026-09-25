@@ -7,6 +7,7 @@ import type { AgentProvider, ProviderRunResult } from "./types.ts";
 export class FakeProvider implements AgentProvider {
   readonly name = "fake";
   private readonly processes = new ProcessManager();
+  private readonly activeAbortControllers = new Map<string, AbortController>();
   private seq = 0;
 
   private readonly signal?: AbortSignal;
@@ -37,13 +38,27 @@ export class FakeProvider implements AgentProvider {
   async execute(worker: WorkerHandle, task: AgentTask): Promise<ProviderRunResult> {
     const script = fileURLToPath(new URL("./fake-worker.ts", import.meta.url));
     const started = Date.now();
-    const managed = await this.processes.run({
-      command: process.execPath,
-      args: ["--experimental-strip-types", script, JSON.stringify({ workerId: worker.id, task, behavior: task.context })],
-      cwd: task.workspace,
-      timeoutMs: task.modelPolicy.timeoutMs ?? 5_000,
-      signal: this.signal,
-    });
+
+    const workerAc = new AbortController();
+    this.activeAbortControllers.set(worker.id, workerAc);
+
+    const onGlobalAbort = () => workerAc.abort();
+    this.signal?.addEventListener("abort", onGlobalAbort, { once: true });
+
+    let managed;
+    try {
+      managed = await this.processes.run({
+        command: process.execPath,
+        args: ["--experimental-strip-types", script, JSON.stringify({ workerId: worker.id, task, behavior: task.context })],
+        cwd: task.workspace,
+        timeoutMs: task.modelPolicy.timeoutMs ?? 5_000,
+        signal: workerAc.signal,
+      });
+    } finally {
+      this.signal?.removeEventListener("abort", onGlobalAbort);
+      this.activeAbortControllers.delete(worker.id);
+    }
+
     worker.pid = managed.pid;
     const reportEvent = [...managed.events].reverse().find((event) => event.type === "report.created");
     let report;
@@ -79,7 +94,12 @@ export class FakeProvider implements AgentProvider {
     return { report, process: managed, handle: { ...worker, pid: managed.pid } };
   }
 
-  async cancel(): Promise<void> {
+  async cancel(worker: WorkerHandle): Promise<void> {
+    this.activeAbortControllers.get(worker.id)?.abort();
+  }
+
+  async cleanup(): Promise<void> {
+    for (const ac of this.activeAbortControllers.values()) ac.abort();
     await this.processes.cleanup();
   }
 

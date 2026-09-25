@@ -120,7 +120,7 @@ export class PiProfileProvider implements AgentProvider {
     });
   }
 
-  cancel(_worker: WorkerHandle): Promise<void> {
-    return this.inner.cancel();
+  cancel(worker: WorkerHandle): Promise<void> {
+    return this.inner.cancel(worker);
   }
 }
