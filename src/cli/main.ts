@@ -4,6 +4,7 @@ import { dependencyGraph } from "../core/graph.ts";
 import { createTask } from "../core/task.ts";
 import { runTasks } from "../index.ts";
 import type { AgentTask } from "../types.ts";
+import { startDaemon } from "../daemon/server.ts";
 
 async function main(): Promise<void> {
   const [command = "help", ...rest] = process.argv.slice(2);
@@ -12,11 +13,16 @@ async function main(): Promise<void> {
 pi-many-agents decompose <markdown> [--integrate]
 pi-many-agents graph --plan <file>
 pi-many-agents demo
+pi-many-agents daemon
 `);
     return;
   }
   if (command === "demo") {
     await runDemo();
+    return;
+  }
+  if (command === "daemon") {
+    await startDaemon();
     return;
   }
   if (command === "decompose") {

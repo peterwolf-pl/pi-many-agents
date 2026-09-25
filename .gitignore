@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .pi-many-agents/
+worktrees/
 *.log
 .DS_Store
 .pi/

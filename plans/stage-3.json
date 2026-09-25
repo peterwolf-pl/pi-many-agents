@@ -1,0 +1,109 @@
+{
+  "stage": "3",
+  "provider": "pi",
+  "notes": "Implement Stage 3 vertical slice: git worktrees with single-writer path locking, local L0 advisor with strict skip-on-unavailable, and CLI daemon with Unix domain socket attach. Real Pi workers only (pi --print --mode json). Do not modify Pi core. No silent fallback to paid cloud models.",
+  "tasks": [
+    {
+      "id": "worktree-and-lock-impl",
+      "title": "Implement git worktree isolation and path-prefix locks",
+      "objective": "Implement PathLockManager and WorktreeManager under src/worktree/. Isolate code tasks in worktrees/<taskId>, report changes relative to worktree root, enforce single-writer on shared path prefixes, and add comprehensive unit tests in test/worktree.test.ts.",
+      "type": "code",
+      "priority": 3,
+      "dependencies": [],
+      "relevantFiles": [
+        "src/types.ts",
+        "src/worktree/lock.ts",
+        "src/worktree/manager.ts",
+        "src/core/scheduler.ts",
+        "src/core/orchestrator.ts",
+        "test/worktree.test.ts",
+        "docs/decisions/0008-worktrees.md"
+      ],
+      "constraints": [
+        "Do not modify Pi core.",
+        "Non-code tasks remain read-only in main workspace.",
+        "Orchestrator must never auto-merge git branches.",
+        "AgentReport.changes.files must be relative to worktree root."
+      ],
+      "expectedOutput": "PathLockManager and WorktreeManager implemented with passing test/worktree.test.ts.",
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": true, "shell": true, "git": true },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "l0-advisor-impl",
+      "title": "Implement local L0 advisor with skip-on-unavailable",
+      "objective": "Implement L0Advisor in src/l0/advisor.ts using OllamaProvider (gemma4:latest). Provide classify, compressSummary, and recommendReasoning. If Ollama is unavailable, emit l0.skipped telemetry and fall back to deterministic rules. Add tests in test/l0.test.ts.",
+      "type": "code",
+      "priority": 2,
+      "dependencies": [],
+      "relevantFiles": [
+        "src/l0/advisor.ts",
+        "src/providers/ollama.ts",
+        "src/routing/rules.ts",
+        "src/telemetry/logger.ts",
+        "test/l0.test.ts",
+        "docs/decisions/0009-l0-local.md"
+      ],
+      "constraints": [
+        "Advisory only: L0 must not spawn child processes, edit files, or invoke tools.",
+        "No silent paid fallback: if Ollama is down, skip and continue with deterministic rules.",
+        "Timeout on L0 queries must not exceed 1500ms."
+      ],
+      "expectedOutput": "L0Advisor module with skip-and-log resilience and passing test/l0.test.ts.",
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": true, "shell": true },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "daemon-and-store-impl",
+      "title": "Implement CLI daemon, Unix socket IPC, and SQLite store",
+      "objective": "Implement Store interface in src/daemon/store.ts and Unix socket IPC server in src/daemon/server.ts. Update CLI main.ts with daemon command and adapt extensions/index.ts to attach over socket with clean abort on session_shutdown. Add test/daemon.test.ts.",
+      "type": "code",
+      "priority": 2,
+      "dependencies": ["worktree-and-lock-impl"],
+      "relevantFiles": [
+        "src/daemon/store.ts",
+        "src/daemon/server.ts",
+        "src/cli/main.ts",
+        "extensions/index.ts",
+        "test/daemon.test.ts",
+        "docs/decisions/0007-daemon.md"
+      ],
+      "constraints": [
+        "Extension must remain thin.",
+        "Factory must not spawn workers.",
+        "Local Unix domain socket only, no remote network exposure.",
+        "Clean process group signal escalation on session_shutdown."
+      ],
+      "expectedOutput": "Daemon server, SQLite store, thin extension attach, and passing test/daemon.test.ts.",
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": true, "shell": true },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "integrate-stage-3",
+      "title": "Verify Stage 3 integration and test suite",
+      "objective": "Run full test suite, lint, and typecheck. Confirm zero regressions, zero Pi core modifications, and end-to-end functionality of worktrees, L0 advisor, and daemon runner.",
+      "type": "test",
+      "priority": 1,
+      "dependencies": [
+        "worktree-and-lock-impl",
+        "l0-advisor-impl",
+        "daemon-and-store-impl"
+      ],
+      "relevantFiles": [
+        "package.json",
+        "docs/roadmap.md",
+        "README.md"
+      ],
+      "constraints": [
+        "All tests, linter, and typecheck must pass cleanly."
+      ],
+      "expectedOutput": "Clean test, lint, and typecheck run logs with Stage 3 summary.",
+      "modelPolicy": { "reasoning": "high" },
+      "permissions": { "read": true, "write": true, "shell": true },
+      "recommendedReasoning": "high"
+    }
+  ]
+}
