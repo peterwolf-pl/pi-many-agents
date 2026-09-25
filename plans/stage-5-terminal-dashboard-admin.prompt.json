@@ -3,7 +3,7 @@
   "project": "pi-many-agents",
   "stage": "5 - terminal dashboard + admin panel",
   "language": "pl",
-  "baseline_commit": "814f58ae836f53642f8ce2d505fe640d77f83d61",
+  "baseline_commit": "ceac19e279140743dcc71b05178c4aca3cc4becc",
   "document_kind": "Hybrydowa instrukcja JSON i bezposrednio uruchamialny plan pi-many-agents. Pelna specyfikacja pozostaje w work_packages, a pole tasks zawiera wykonawczy plan dla /many i run --plan.",
   "role": "Jestes glownym agentem rozwijajacym pi-many-agents. Zbuduj lokalny terminalowy Dashboard z panelem admin, ktory dziala jako osobny proces i laczy sie z istniejacym daemonem. Dashboard ma byc uruchamiany z CLI w nowym oknie Terminal.app na macOS. Zachowaj architekture zewnetrznego orkiestratora i nie modyfikuj rdzenia Pi.",
   "objective": "Dodaj czytelny, szybki TUI do obserwacji i kontrolowania pi-many-agents: stan daemona, runy, taski/workery, providery, reasoning, modele, kolejke, postep, usage, bledy i event log. Panel admin ma pozwalac bezpiecznie uruchomic plan, anulowac wybrany run, odswiezyc dane i podejrzec szczegoly. Domyslna komenda dashboard na macOS otwiera nowa karte/okno Terminal.app z TUI; tryb --inline uruchamia go w biezacym terminalu i sluzy do testow oraz innych systemow.",
@@ -497,5 +497,6 @@
         "git": true
       }
     }
-  ]
+  ],
+  "baseline_note": "Baseline obejmuje scalony Stage 4 z lokalnymi providerami Qwen4 i Docker Model Runner Mistral."
 }
