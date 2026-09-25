@@ -12,6 +12,8 @@ import { WorkerHealth } from "./health.ts";
 import { TaskQueue } from "./scheduler.ts";
 import { WorkerManager } from "./worker-manager.ts";
 import { validateRunOptions } from "./plan.ts";
+import { PathLockManager } from "../worktree/lock.ts";
+import { WorktreeManager } from "../worktree/manager.ts";
 
 export class Orchestrator {
   readonly bus = new EventBus();
@@ -45,6 +47,8 @@ export class Orchestrator {
     const queue = new TaskQueue(prepared.tasks);
     const manager = new WorkerManager(this.providers);
     this.manager = manager;
+    const pathLocks = new PathLockManager();
+    const worktreeManager = new WorktreeManager(options.workspace ?? process.cwd());
     const health = new WorkerHealth(this.config.unhealthyAfterFailures);
     const reports: AgentReport[] = [];
     const events: ProtocolMessage[] = [];
@@ -73,7 +77,14 @@ export class Orchestrator {
       const plan = routeTask(task, this.config);
       const providerName = options.provider ?? plan.provider;
       const job = (async () => {
+        let lockAcquired = false;
         try {
+          if (task.permissions.write) {
+            const writeScope = task.writeScope && task.writeScope.length > 0 ? task.writeScope : ["/"];
+            await pathLocks.acquire(task.id, writeScope, options.signal);
+            lockAcquired = true;
+          }
+
           const provider = this.providers.get(providerName);
           if (!provider) {
             const report = failedReport(task.id, "orchestrator", `unknown provider: ${providerName}`);
@@ -129,12 +140,26 @@ export class Orchestrator {
               worker.state = "cancelled";
               break;
             }
+            let taskWorkspace = task.workspace;
+            if (task.permissions.write) {
+              try {
+                await worktreeManager.createWorktree(task.id);
+                taskWorkspace = worktreeManager.getAbsolutePath(task.id) ?? task.workspace;
+              } catch {
+                // If not git repo or creation fails, use default workspace
+              }
+            }
+
             const taskContext = formatDependencyContext(task, reports);
             report = await worker.run({
               ...task,
+              workspace: taskWorkspace,
               context: taskContext,
               modelPolicy: { ...task.modelPolicy, model: plan.model, reasoning: plan.reasoning, timeoutMs: plan.timeoutMs },
             });
+            if (task.permissions.write) {
+              report = worktreeManager.normalizeReport(report, task.id);
+            }
             if (!retryable(report) || attempt === attempts) break;
             await publish(createMessage("task.progress", worker.id, { attempt, retry: true, error: report.error }, task.id));
           }
@@ -175,10 +200,13 @@ export class Orchestrator {
           rows.set(task.id, { id: task.id, state: "failed", title: task.title });
           await publish(createMessage("task.failed", "orchestrator", { error: report.error }, task.id));
           await publish(createMessage("report.created", "orchestrator", { ...report }, task.id));
+        } finally {
+          if (lockAcquired) {
+            pathLocks.release(task.id);
+          }
+          inflight.delete(job);
         }
-      })().finally(() => {
-        inflight.delete(job);
-      });
+      })();
       inflight.add(job);
     };
 

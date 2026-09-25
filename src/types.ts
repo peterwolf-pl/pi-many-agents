@@ -41,6 +41,7 @@ export interface AgentTask {
   workspace?: string;
   context?: string;
   relevantFiles?: string[];
+  writeScope?: string[];
   constraints?: string[];
   expectedOutput?: string;
   modelPolicy: ModelPolicy;

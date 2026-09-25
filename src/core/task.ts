@@ -41,6 +41,7 @@ export function createTask(input: Partial<AgentTask> & Pick<AgentTask, "id" | "t
     workspace: input.workspace,
     context: input.context,
     relevantFiles: input.relevantFiles ? [...input.relevantFiles] : undefined,
+    writeScope: input.writeScope ? [...input.writeScope] : undefined,
     constraints: input.constraints ? [...input.constraints] : undefined,
     expectedOutput: input.expectedOutput,
     modelPolicy: {

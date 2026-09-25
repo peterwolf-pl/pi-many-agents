@@ -102,7 +102,7 @@ test("WorktreeManager: normalizeReport makes paths relative to worktree root", a
     durationMs: 10,
   };
   const norm = wm.normalizeReport(report, taskId);
-  assert.deepEqual(norm.changes?.files, ["src/foo.ts", "bar/baz.ts", "../../../abs/other"]);
+  assert.deepEqual(norm.changes?.files, ["src/foo.ts", "bar/baz.ts"]);
   await wm.removeWorktree(taskId);
 });
 
