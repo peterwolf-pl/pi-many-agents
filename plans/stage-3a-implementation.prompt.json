@@ -1,0 +1,185 @@
+{
+  "prompt_version": "1.0",
+  "project": "pi-many-agents",
+  "stage": "3A - niezawodne wykonanie i integracja istniejących modułów",
+  "language": "pl",
+  "baseline_commit": "21c4f3eac30ae006bf0c24133d64362b0c877db5",
+  "document_kind": "Instrukcja JSON dla głównego agenta programującego, nie gotowy plan do komendy /many ani run --plan",
+  "role": "Jesteś głównym agentem rozwijającym pi-many-agents. Wdrażaj zmiany w istniejącym repozytorium. Nie kończ na analizie ani kolejnym planie. Zachowaj architekturę zewnętrznego orkiestratora bez modyfikacji rdzenia Pi.",
+  "objective": "Domknij działający przepływ plan -> walidacja -> wykonanie CLI lub daemon -> workery -> raporty zależności -> trwały wynik. Podłącz istniejące worktrees dopiero po naprawie cyklu życia. Nie dodawaj nowych dostawców, dashboardu ani routera kosztowego w tym etapie.",
+  "baseline_evidence": {
+    "verified": ["28/28 testów na Node 24.19.0", "npm run typecheck przechodzi", "npm run lint przechodzi", "npm run demo przechodzi"],
+    "limitations": ["Brak testu realnego Pi w środowisku audytu", "Typecheck nie obejmuje extensions", "Test daemon.test.ts sprawdza tylko SQLite", "Istniejący lint sprawdza tylko dwa wzorce tekstowe"],
+    "confirmed_reproductions": [
+      "parseMessageLine dla żądania {type:run,tasks:[],requestId:x} zwraca undefined",
+      "new DaemonServer w świeżym katalogu zgłasza unable to open database file",
+      "extractJsonReport gubi poprawny AgentReport zawierający zagnieżdżone changes",
+      "wrapTextReport potrafi przyjąć completed od workera pomimo status:failed i error procesu",
+      "Usunięcie duplikatu b pozostawia zależność c -> b i powoduje missing dependency",
+      "maxConcurrentWorkers:0 zwraca zero raportów zamiast błędu walidacji"
+    ]
+  },
+  "startup": [
+    "Przeczytaj AGENTS.md, jeśli istnieje, oraz aktualne źródła. Porównaj HEAD z baseline_commit. Jeśli main się zmienił, sprawdź, które problemy nadal istnieją; nie odtwarzaj już wykonanych napraw.",
+    "Sprawdź git status i zachowaj cudze zmiany. Pracuj na osobnej gałęzi. Nie publikuj ani nie scalaj do main bez odrębnej instrukcji.",
+    "Uruchom istniejące testy, typecheck, lint i demo. Zapisz rzeczywiste wyniki oraz wersję Node.",
+    "Przed każdym pakietem napraw dodaj test odtwarzający konkretny błąd. Testy procesowe uruchamiaj w tymczasowych repozytoriach i odizolowanych grupach procesów, nigdy na bieżącej grupie powłoki.",
+    "Nie wykonuj tego dokumentu przez obecny /many. Naprawy krytycznej ścieżki wykonaj bezpośrednio. Nie uznawaj komunikatu Completed od fake za implementację lub przegląd semantyczny."
+  ],
+  "execution_policy": {
+    "initial_mode": "Jeden autor zmian aż do przejścia bramki IPC, anulowania i izolacji. Niezależne przeglądy tylko do odczytu mogą działać równolegle, jeżeli dostępne narzędzia rzeczywiście na to pozwalają.",
+    "reasoning": {
+      "deterministic_commands": "none, jeśli obsługiwane; odczyt ustalonego pliku lub uruchomienie testu nie wymaga nowego planowania",
+      "bounded_review": "low",
+      "implementation": "medium",
+      "lifecycle_concurrency_review": "high tylko dla trudnych wyścigów, utraty danych lub niejasnego kontraktu"
+    },
+    "models": "Używaj rzeczywiście dostępnych modeli. Zweryfikuj lokalny katalog Pi. Nie zakładaj, że wpisy w PI_WORKER_PROFILES są dostępne. Nie przełączaj automatycznie na płatne API. Nie pobieraj modeli automatycznie.",
+    "delegation": "Po przejściu bramki izolacji można delegować niezależne zadania przez naprawione many-agents, maksymalnie dwóm workerom na początku. Każdy dostaje mały pakiet kontekstu, własny zakres plików i wymagany rezultat. Raporty zależności przekazuj jawnie. Integrację zmian wykonuje główny agent.",
+    "budget": "Nie ogłaszaj oszczędności tokenów bez pomiaru. Nie traktuj maxTokens jako twardego limitu, jeśli adapter go nie egzekwuje. Unknown usage musi pozostać unknown."
+  },
+  "work_packages": [
+    {
+      "id": "P1",
+      "title": "Jeden kontrakt wejścia i jawny wybór wykonawcy",
+      "depends_on": [],
+      "files": ["src/cli/main.ts", "src/config/config.ts", "src/core/task.ts", "src/routing/rules.ts", "src/types.ts", "src/providers/catalog.ts", "src/providers/pi.ts"],
+      "requirements": [
+        "Współdziel parsowanie i walidację planu pomiędzy CLI i rozszerzeniem. Waliduj typy, puste pola, identyfikatory, graf, skończone liczby całkowite i zakresy. Concurrency >= 1; retries >= 0; timeout > 0.",
+        "Ustal i przetestuj precedence adaptera: jawne nadpisanie CLI, następnie pole provider planu, następnie konfiguracja. Zachowaj kompatybilność istniejących planów. Rozdziel adapter od dostawcy modelu w Pi.",
+        "Ustal jeden wynikowy model i reasoning, używany zarówno w wykonaniu, jak i telemetrii. defaultModel nie może być tylko etykietą raportu. Nie wysyłaj fake-deterministic do prawdziwego Pi.",
+        "Jawny reasoning none musi być rozróżnialny od braku wartości. Zachowaj udokumentowaną politykę minimów; raportuj każdą zmianę poziomu i jej przyczynę.",
+        "Waliduj parę dostawca-model na podstawie rzeczywistych danych Pi, jeśli dostępne. Nie deklaruj wszystkim modelom contextWindow 1000000. Nieobsługiwane możliwości zgłaszaj przed startem; fake pozostaje dozwolony do symulacji planów.",
+        "Nie wymyślaj flag Pi dla budżetu tokenów. Oznacz budżet jako nieegzekwowany, jeśli backend nie ma potwierdzonego wsparcia."
+      ],
+      "acceptance": ["CLI nie ignoruje provider z planu", "Nieprawidłowe liczby kończą się błędem przed spawn", "Stub binarki Pi potwierdza zgodność argv z efektywnym modelem i reasoningiem", "Brak automatycznej zmiany providera po błędzie"]
+    },
+    {
+      "id": "P2",
+      "title": "Wiarygodne raporty i wynik procesu",
+      "depends_on": ["P1"],
+      "files": ["src/protocol/report.ts", "src/providers/pi.ts", "src/providers/fake.ts", "src/core/task.ts", "src/process/process-manager.ts"],
+      "requirements": [
+        "Zastąp lastIndexOf('{') parserem pełnego JSON lub poprawnego bloku fenced. Obsłuż zagnieżdżone changes, usage i artefakty, klamry w stringach, prozę otaczającą oraz kilka bloków. Zdefiniuj jednoznacznie wybór końcowego raportu.",
+        "Ujednolić kontrakt raportu w promptach z walidatorem. Identyfikatory zadania, workera i czas pochodzą od orkiestratora; worker nie może ich podmienić. Waliduj findings i liczby, nie tylko Array.isArray.",
+        "Timeout, anulowanie i niezerowy exit procesu mają pierwszeństwo nad deklaracją completed w odpowiedzi LLM. Zachowaj diagnostykę oraz użyteczne części raportu.",
+        "Zakończ zbieranie stdout/stderr po close strumieni, nie przedwcześnie po exit procesu. Dodaj limit rozmiaru bufora i opisany błąd przekroczenia.",
+        "Zweryfikuj rzeczywisty format usage Pi za pomocą fixture ze znanej wersji. Nie zakładaj, że usage zawsze leży na najwyższym poziomie zdarzenia; nie licz danych podwójnie."
+      ],
+      "acceptance": ["Zagnieżdżony raport jest parsowany", "Błąd procesu nigdy nie daje completed", "Ostatnia porcja stdout trafia do raportu", "Brak poprawnego raportu ma jawny status i ostrzeżenie"]
+    },
+    {
+      "id": "P3",
+      "title": "Anulowanie pojedynczego zadania i odporna pętla wykonania",
+      "depends_on": ["P2"],
+      "files": ["src/core/orchestrator.ts", "src/core/worker-manager.ts", "src/process/process-manager.ts", "src/providers/types.ts", "src/providers/pi.ts", "src/providers/fake.ts", "src/providers/ollama.ts", "src/providers/docker-mistral.ts", "src/providers/catalog.ts"],
+      "requirements": [
+        "Każdy worker ma własny uchwyt procesu lub AbortController. cancelTask(A) nie może zakończyć B korzystającego z tego samego adaptera. Ollama musi anulować wskazane żądanie HTTP.",
+        "Obsłuż sygnał przerwany przed run/spawn, anulowanie podczas available/spawn/execute oraz oczekiwanie na zasób. Nie uruchamiaj procesu po anulowaniu.",
+        "Wyjątki available i spawn także mają trafić do raportu konkretnego zadania. Jedna awaria nie może porzucić wyników innych workerów.",
+        "Sprzątanie obejmuje tylko własne procesy i grupy workerów. Nigdy process.kill(0, ...). Po anulowaniu odczekaj na zakończenie procesów i zamknięcie strumieni.",
+        "Zdefiniuj terminalne stany. Nie oznaczaj poprawnie zakończonych workerów cancelled podczas końcowego cleanup. Resetuj stan anulowań między uruchomieniami albo zabroń ponownego użycia instancji jawnie.",
+        "Każde przyjęte zadanie kończy się dokładnie jednym terminalnym raportem i spójnym zdarzeniem. Rozróżniaj anulowanie użytkownika, błąd zależności i błąd workera."
+      ],
+      "acceptance": ["Anulowanie A pozostawia B działające", "Pre-aborted run nie uruchamia żadnego workera", "Wyjątek spawn nie zrywa całego batcha", "Po run nie pozostają procesy ani listenery", "Ponowny run nie dziedziczy anulowań"]
+    },
+    {
+      "id": "P4",
+      "title": "Działający daemon i klient rozszerzenia",
+      "depends_on": ["P1", "P3"],
+      "files": ["src/daemon/server.ts", "src/protocol/messages.ts", "extensions/index.ts", "src/cli/main.ts", "bin/pi-many-agents.js"],
+      "requirements": [
+        "Zdefiniuj osobny wersjonowany protokół IPC dla run/status/abort, odpowiedzi i zdarzeń. Nie parsuj komend klienta walidatorem ProtocolMessage workera. Współdziel definicje i walidację po obu stronach.",
+        "Buforuj JSONL po obu stronach. Obsłuż podział ramki i wielobajtowego UTF-8 między chunkami, wiele ramek w jednym chunku, błędny JSON i limit rozmiaru.",
+        "requestId/runId identyfikuje uruchomienie. Osobny AbortController na run; anulowanie run A nie wpływa na B ani przyszły C. Ustal globalny limit lub jawne busy/serializację, aby liczba klientów nie omijała limitu workerów.",
+        "Utwórz katalog danych przed SQLite. Nie usuwaj aktywnego socketu innego daemona. Sprawdź stale socket/PID i zabezpiecz pojedynczą instancję dla katalogu.",
+        "Shutdown najpierw zatrzymuje przyjmowanie pracy, anuluje i rozlicza własne uruchomienia, zapisuje wyniki, potem zamyka store i socket. Usuń timery i signal handlers. Nie zabijaj grupy procesu nadrzędnego.",
+        "Klient obsługuje close/error/end oraz timeout połączenia, odrzuca cudze requestId i zawsze kończy oczekiwanie oraz czyści status UI. Zastąp polling setInterval obietnicą kończoną zdarzeniami.",
+        "session_shutdown anuluje tylko uruchomienie należące do tej sesji. Finalny raport wraca do Pi raz. Przetestuj wywołanie API Pi na stubie i rzeczywistej dostępnej wersji, bez wymyślania metod."
+      ],
+      "acceptance": ["Świeży katalog: daemon -> run fake -> wynik -> shutdown", "Żądanie dokładnie w formacie klienta zostaje wykonane", "Podzielone ramki nie giną", "Odłączenie klienta nie zostawia wiszącej obietnicy", "Abort A, następnie udany nowy run", "Drugi daemon nie odłącza pierwszego"]
+    },
+    {
+      "id": "P5",
+      "title": "Trwałe uruchomienia i prawdziwy status",
+      "depends_on": ["P4"],
+      "files": ["src/daemon/store.ts", "src/daemon/server.ts", "src/types.ts"],
+      "requirements": [
+        "Dodaj tożsamość run i migrację schematu. Nie nadpisuj raportów różnych uruchomień mających takie same taskId; przechowuj klucz runId + taskId oraz próby według uzgodnionego kontraktu.",
+        "Zapisz plan i zadania przed startem. Aktualizuj stany i raporty podczas pracy, nie dopiero po zakończeniu całego batcha.",
+        "Status zwraca stany uruchomień i liczby queued/running/completed/failed/cancelled, a nie liczbę pustej tabeli tasks.",
+        "Po restarcie oznacz niedokończone uruchomienia jako przerwane. Nie wznawiaj automatycznie operacji zapisujących ani nie obiecuj exactly-once wykonania narzędzi.",
+        "Zapis i obsługa błędów nie mogą korzystać z zamkniętej bazy. Subskrypcje event bus zwalniaj w finally."
+      ],
+      "acceptance": ["Dwa run z taskId A zachowują dwa wyniki", "Restart zachowuje historię i wykrywa przerwaną pracę", "Status odpowiada rzeczywistemu wykonaniu", "Shutdown podczas pracy nie zapisuje do zamkniętej bazy"]
+    },
+    {
+      "id": "P6",
+      "title": "Poprawny graf i przekazywanie raportów zależności",
+      "depends_on": ["P2", "P3"],
+      "files": ["src/core/dedup.ts", "src/core/task.ts", "src/core/scheduler.ts", "src/core/orchestrator.ts", "src/core/decompose.ts", "src/types.ts"],
+      "requirements": [
+        "Waliduj oryginalny graf przed deduplikacją. Deduplikuj tylko semantycznie zgodne zadania: uwzględnij workspace, kontekst, constraints, permissions, modelPolicy i zależności albo konserwatywnie pomiń dedup przy różnicach.",
+        "Stwórz mapowanie usuniętego ID na zachowane ID i przepisz wszystkie zależności. Nie zamieniaj zależnych po sobie zadań w samozależność. Ponownie sprawdź graf i jawnie raportuj aliasy.",
+        "Przed startem zadania dołącz ograniczone objętościowo wyniki jego bezpośrednich zależności: taskId, status, summary, findings, changes i referencje do artefaktów. Nie dołączaj całej rozmowy ani raportów innych run.",
+        "Zapisz pełne raporty jako źródło; skróty oznacz jako skrócone. Określ deterministyczny limit kontekstu i zachowanie dla brakującego lub partial raportu.",
+        "Domyślnie partial nie może bezwarunkowo odblokować zadania integracyjnego. Wprowadź udokumentowaną politykę i testy."
+      ],
+      "acceptance": ["A i duplikat B oraz C -> B tworzą działający graf", "Różne workspace/context nie zlewają się", "Zależność od duplikatu nie tworzy cyklu", "Worker integracyjny faktycznie dostaje wyniki poprzedników", "Brak wycieku wyników między uruchomieniami"]
+    },
+    {
+      "id": "P7",
+      "title": "Podłączenie worktrees bez utraty pracy",
+      "depends_on": ["P3", "P5", "P6"],
+      "files": ["src/worktree/manager.ts", "src/worktree/lock.ts", "src/core/orchestrator.ts", "src/core/worker-manager.ts", "src/types.ts", "src/core/task.ts"],
+      "requirements": [
+        "Włącz WorktreeManager i PathLockManager w realny cykl uruchomienia. Wprowadź jawne zakresy zapisu, zachowywane przez createTask. Brak zakresu oznacza blokadę całego workspace.",
+        "Każde zadanie deklarujące zapis musi mieć jednoznaczną izolację, także type:test lub shell. Nie traktuj type:code jako jedynego źródła mutacji. Udokumentuj, że uprawnienia narzędzi i locks nie są sandboxem OS.",
+        "Użyj runId i bezpiecznego taskId w nazwie worktree/branch. Odrzuć traversal, ścieżki absolutne poza workspace oraz niepoprawne refy. Zweryfikuj tożsamość istniejącego worktree zamiast ignorować każdy błąd already exists.",
+        "Przekaż absolutne cwd worktree do workera. Zdefiniuj bazowy commit i zachowanie przy brudnym repo: zachowaj zmiany użytkownika, wyjaśnij co widzi worker, nie resetuj ich.",
+        "Blokady muszą być anulowalne i zwalniane w finally. Uporządkuj ścieżki, w tym '.' i '..'; blokowanie zakresów nie zastępuje izolacji systemowej.",
+        "Nie usuwaj worktree zawierającego zmiany przez --force i nie kasuj branch -D automatycznie. Zachowaj zmiany i artefakty po success/failure/abort. Bezpieczne sprzątanie dotyczy tylko własnych pustych worktrees.",
+        "Nie scalaj automatycznie. Raportuj branch, base commit, ścieżkę worktree i zmienione pliki. Następny worker nie otrzymuje automatycznie kodu z innego worktree; integracja musi jawnie przenieść wybrane zmiany.",
+        "NormalizeReport odrzuca ścieżki poza root zamiast akceptować ../../../. Testy używają mkdtemp i repo fixture, nigdy gałęzi użytkownika."
+      ],
+      "acceptance": ["Dwa realne workery testowe zapisują do różnych cwd", "Główne repo pozostaje niezmienione", "Nakładające się zakresy nie piszą jednocześnie", "Abort oczekiwania na lock kończy zadanie", "Zapisane zmiany przetrwają cleanup i restart", "Złośliwy taskId nie tworzy plików poza obszarem worktrees"]
+    },
+    {
+      "id": "P8",
+      "title": "Bramka jakości i dokumentacja faktycznego stanu",
+      "depends_on": ["P1", "P2", "P3", "P4", "P5", "P6", "P7"],
+      "files": ["test", "tsconfig.json", "package.json", "package-lock.json", "README.md", "docs/architecture.md", "docs/pi-integration.md", "docs/roadmap.md", "docs/decisions"],
+      "requirements": [
+        "Objąć extensions kontrolą typów z prawdziwymi typami wspieranej wersji Pi. Nie maskuj problemu przez any lub wyłączenie pliku.",
+        "Dodaj test IPC całej ścieżki, test cienkiego klienta rozszerzenia, test izolacji procesów i worktrees. Uruchamiaj niezależnie od istniejącego .pi-many-agents.",
+        "Ustal minimalną wspieraną wersję Node na podstawie wykonania testów oraz potrzeb strip-types i SQLite. Dopasuj engines i dokumentację.",
+        "Uaktualnij README na podstawie dostarczonego README.md i rzeczywistego wyniku wdrożenia. Usuń naprawione ograniczenia dopiero po testach. Zachowaj sekcje instalacji, planów, konfiguracji, dostawców, uprawnień i ograniczeń.",
+        "Zapisz ADR dla protokołu IPC, anulowania, izolacji i trwałości. Nie przedstawiaj L0, kosztowego routingu, tmux ani auto-merge jako wdrożonych.",
+        "Uruchom test, typecheck, lint, demo. Jeżeli Pi jest dostępne, wykonaj minimalny jawnie skonfigurowany smoke test read-only. Jeśli niedostępne, podaj NOT VERIFIED i wyniki stubów; nie używaj fake jako dowodu realnej integracji z modelem."
+      ],
+      "acceptance": ["Wszystkie bramki przechodzą lub blokada jest precyzyjnie udokumentowana", "README opisuje działające polecenia", "Nie ma pozostawionych procesów testowych", "Diff nie zawiera sekretów, baz danych ani cudzych zmian"]
+    }
+  ],
+  "deferred": [
+    "Podłączenie L0 do produkcyjnego routingu, near-duplicate assist i automatyczna eskalacja",
+    "Nowe adaptery Codex/Grok/Gemini poza już istniejącym Pi",
+    "Router kosztowy, twarde budżety finansowe, benchmark oszczędności",
+    "TUI, tmux, nowe okna terminala",
+    "Automatyczne merge, samomodyfikacja oraz automatyczne wznowienie zadań zapisujących"
+  ],
+  "definition_of_done": [
+    "CLI i /many przez daemon wykonują zgodnie ten sam zwalidowany plan.",
+    "Każde przyjęte zadanie ma jednoznaczny zapisany wynik; wyjątek albo abort nie daje fałszywego success.",
+    "Anulowanie jest lokalne dla zadania lub run i nie dotyka innych prac.",
+    "Zależności przekazują rzeczywiste raporty, a deduplikacja zachowuje poprawny graf.",
+    "Zadania zapisujące działają w przygotowanych worktrees, a ich zmiany nie znikają po cleanup.",
+    "Nie dodano cichego fallbacku, automatycznego merge ani nowych płatnych zależności."
+  ],
+  "final_report_format": {
+    "implemented": "Pakiety P1-P8 z krótkim opisem zmiany i wskazaniem plików",
+    "verification": "Dokładne polecenia, wyniki, liczba testów, Node, sprawdzona wersja Pi lub NOT VERIFIED",
+    "remaining": "Rzeczywiste ograniczenia, bez deklaracji przyszłych funkcji jako gotowych",
+    "usage": "Minimalny przykład CLI i /many z prawdziwym providerem dostępnym w środowisku",
+    "git": "Gałąź, lista własnych commitów i stan worktrees; bez automatycznego publikowania"
+  }
+}
