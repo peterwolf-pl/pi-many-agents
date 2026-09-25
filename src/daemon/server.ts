@@ -76,6 +76,7 @@ export class DaemonServer {
     await writeFile(this.pidPath, String(process.pid), "utf8");
     this.setupSignalHandlers();
     this.running = true;
+    process.stderr.write(`[daemon] listening on ${this.socketPath} (pid ${process.pid})\n`);
   }
 
   private probeSocket(path: string): Promise<boolean> {
