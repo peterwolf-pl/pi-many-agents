@@ -121,7 +121,14 @@ Plik `.pi-many-agents.json` w katalogu uruchomienia:
   "maxRetries": 1,
   "unhealthyAfterFailures": 3,
   "piBinary": "pi",
-  "telemetryPath": ".pi-many-agents/telemetry.jsonl"
+  "telemetryPath": ".pi-many-agents/telemetry.jsonl",
+  "ollama": {
+    "baseUrl": "http://127.0.0.1:11434"
+  },
+  "mistral": {
+    "baseUrl": "http://127.0.0.1:12434/engines/v1",
+    "model": "ai/mistral"
+  }
 }
 ```
 
@@ -136,8 +143,9 @@ Jawny reasoning `none` jest rozróżniany od braku wartości (niepodana wartoś�
 | `fake` | Deterministyczny proces testowy | Nie wykonuje pracy semantycznej ani edycji kodu |
 | `pi` | `pi --print --mode json --no-session --no-extensions` | Wymaga lokalnego Pi i dostępnego modelu |
 | Profile Pi | Ten sam adapter z ustawionym dostawcą i modelem | Dostępność profilu sprawdza nazwę dostawcy, nie pełną parę dostawca-model |
-| `gemma4` | Ollama, port 11434, domyślnie `gemma4:latest` | Chat tekstowy, bez odczytu plików i narzędzi |
-| `mistral` | API Ollama, port 11435, domyślnie `mistral` | Chat tekstowy; automatyczny start kontenera nie stanowi działającej ścieżki startowej runnera |
+| `qwen4` | Ollama, port 11434 (dynamiczny tag lub z konfiguracji) | Chat tekstowy, brak narzędzi, brak auto-pull |
+| `gemma4` | Ollama, port 11434, domyślnie `gemma4:latest` | Chat tekstowy, alias kompatybilności wstecznej |
+| `mistral` | Docker Model Runner, OpenAI API na porcie 12434 (`ai/mistral`) | Chat tekstowy, brak narzędzi, wymaga aktywnego Docker Model Runnera |
 
 Katalog zawiera m.in. `antigravity`, `google-antigravity-2`, `google-antigravity-3`, `google-antigravity-4`, `xai`, `openai-codex` i aliasy modeli. Są to wpisy w kodzie, nie gwarancja dostępności na Twoim koncie. Sprawdź lokalny wynik `pi --list-models`.
 

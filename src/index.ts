@@ -19,8 +19,29 @@ export { routeTask } from "./routing/rules.ts";
 export function createOrchestrator(config: ManyAgentsConfig, signal?: AbortSignal): Orchestrator {
   const orchestrator = new Orchestrator(config);
   orchestrator.registerProvider(new FakeProvider(signal));
-  orchestrator.registerProvider(new DockerMistralProvider({ signal }));
-  orchestrator.registerProvider(new OllamaProvider({ name: "gemma4", model: "gemma4:latest", signal }));
+  orchestrator.registerProvider(
+    new DockerMistralProvider({
+      baseUrl: config.mistral?.baseUrl,
+      model: config.mistral?.model,
+      signal,
+    })
+  );
+  orchestrator.registerProvider(
+    new OllamaProvider({
+      name: "qwen4",
+      baseUrl: config.ollama?.baseUrl,
+      model: config.ollama?.model,
+      signal,
+    })
+  );
+  orchestrator.registerProvider(
+    new OllamaProvider({
+      name: "gemma4",
+      baseUrl: config.ollama?.baseUrl,
+      model: "gemma4:latest",
+      signal,
+    })
+  );
   orchestrator.registerProvider(new PiProvider(config, signal));
   let listed: string[] | undefined;
   const providers = () => (listed ??= listPiProviders(config.piBinary));
