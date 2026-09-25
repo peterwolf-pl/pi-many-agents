@@ -3,6 +3,54 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AgentReport, AgentTask, ProtocolMessage } from "../types.ts";
 
+export interface RunSummary {
+  id: string;
+  state: string;
+  createdAt: number;
+  updatedAt: number;
+  taskCount: number;
+  completed: number;
+  running: number;
+  failed: number;
+  queued: number;
+}
+
+export interface TaskView {
+  id: string;
+  title: string;
+  state: string;
+  runId?: string;
+  provider?: string;
+  model?: string;
+  reasoning?: string;
+  durationMs?: number;
+  attempts?: number;
+}
+
+export interface ProviderStatus {
+  name: string;
+  model: string;
+  status: "available" | "unavailable" | "unknown" | "registered";
+  reachable?: boolean;
+}
+
+export interface DashboardSnapshot {
+  daemon: { running: boolean; pid?: number; lastRefresh: number };
+  runs: RunSummary[];
+  activeRunCount: number;
+  taskCounts: StoreStatus["tasks"];
+  providers: ProviderStatus[];
+  recentEvents: ProtocolMessage[];
+  tasks?: TaskView[];
+}
+
+export interface RunDetails {
+  run: RunRecord | undefined;
+  tasks: TaskView[];
+  reports: AgentReport[];
+  events: ProtocolMessage[];
+}
+
 export interface RunRecord {
   id: string;
   state: "running" | "completed" | "failed" | "aborted";
@@ -26,6 +74,7 @@ export interface Store {
   updateTaskState(runId: string, taskId: string, state: string): void;
   getTask(runId: string, id: string): AgentTask | undefined;
   listTasks(runId?: string): AgentTask[];
+  listTaskViews(runId?: string): TaskView[];
 
   saveReport(runId: string, report: AgentReport): void;
   getReport(runId: string, taskId: string): AgentReport | undefined;
@@ -234,6 +283,38 @@ export class SqliteStore implements Store {
     const stmt = this.db.prepare("SELECT json FROM tasks ORDER BY id");
     const rows = stmt.all() as unknown as TaskRow[];
     return rows.map((r) => JSON.parse(r.json) as AgentTask);
+  }
+
+  listTaskViews(runId?: string): TaskView[] {
+    if (this.closed) return [];
+    let rows: TaskRow[];
+    if (runId) {
+      const stmt = this.db.prepare(
+        "SELECT run_id, id, state, json FROM tasks WHERE run_id = ? ORDER BY id"
+      );
+      rows = stmt.all(runId) as unknown as TaskRow[];
+    } else {
+      const stmt = this.db.prepare("SELECT run_id, id, state, json FROM tasks ORDER BY id");
+      rows = stmt.all() as unknown as TaskRow[];
+    }
+    return rows.map((r) => {
+      let task: Partial<AgentTask> = {};
+      try {
+        task = JSON.parse(r.json);
+      } catch {}
+      const mp = task.modelPolicy ?? {};
+      return {
+        id: r.id,
+        title: task.title ?? r.id,
+        state: r.state,
+        runId: r.run_id,
+        provider: mp.provider,
+        model: mp.model,
+        reasoning: mp.reasoning,
+        durationMs: undefined,
+        attempts: undefined,
+      };
+    });
   }
 
   saveReport(runId: string, report: AgentReport): void {

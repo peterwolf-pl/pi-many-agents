@@ -24,7 +24,7 @@ export function resolveDaemonSocket(cwd: string, socketPath = DEFAULT_SOCKET_PAT
 
 export function isDaemonUnavailableError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return code === "ENOENT" || code === "ECONNREFUSED";
+  return code === "ENOENT" || code === "ECONNREFUSED" || code === "EINVAL" || code === "EADDRINUSE";
 }
 
 export function connectDaemon(socketPath: string, timeoutMs = 1500): Promise<Socket> {

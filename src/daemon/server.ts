@@ -5,6 +5,14 @@ import { existsSync } from "node:fs";
 import { createOrchestrator, loadConfig } from "../index.ts";
 import type { AgentTask, ProtocolMessage, RunOptions, RunResult } from "../types.ts";
 import { createStore, type Store } from "./store.ts";
+import type {
+  RunRecord,
+  RunSummary,
+  TaskView,
+  ProviderStatus,
+  DashboardSnapshot,
+  RunDetails,
+} from "./store.ts";
 import {
   JsonLineDecoder,
   parseClientRequest,
@@ -162,6 +170,24 @@ export class DaemonServer {
       return;
     }
 
+    if (req.type === "dashboard.snapshot") {
+      const snapshot = this.buildDashboardSnapshot();
+      this.send(socket, createIpcResponse("result", req.requestId, snapshot));
+      return;
+    }
+
+    if (req.type === "run.details") {
+      const details = this.buildRunDetails(req.runId);
+      this.send(socket, createIpcResponse("result", req.requestId, details));
+      return;
+    }
+
+    if (req.type === "providers.status") {
+      const providers = this.buildProvidersStatus();
+      this.send(socket, createIpcResponse("result", req.requestId, { providers }));
+      return;
+    }
+
     if (req.type === "abort") {
       if (req.requestId) {
         const active = this.activeRuns.get(req.requestId);
@@ -270,6 +296,66 @@ export class DaemonServer {
     for (const client of this.clients) {
       this.send(client, resp);
     }
+  }
+
+  private buildDashboardSnapshot(): DashboardSnapshot {
+    const status = this.store.getStatus();
+    const runsRaw = this.store.listRuns().slice(0, 20);
+    const taskViews = this.store.listTaskViews();
+    const recentEvents = this.store.listEvents(undefined, 30);
+
+    const runs: RunSummary[] = runsRaw.map((r) => {
+      const runTasks = taskViews.filter((t) => t.runId === r.id);
+      const counts = { completed: 0, running: 0, failed: 0, queued: 0 };
+      for (const t of runTasks) {
+        if (t.state in counts) (counts as any)[t.state]++;
+        else if (t.state === "cancelled") counts.failed++; // map
+      }
+      return {
+        id: r.id,
+        state: r.state,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        taskCount: runTasks.length,
+        completed: counts.completed,
+        running: counts.running,
+        failed: counts.failed,
+        queued: counts.queued,
+      };
+    });
+
+    // For simplicity in snapshot, use global task counts; per-run counts would require join in store
+    return {
+      daemon: {
+        running: this.running,
+        pid: process.pid,
+        lastRefresh: Date.now(),
+      },
+      runs,
+      activeRunCount: this.activeRuns.size,
+      taskCounts: status.tasks,
+      providers: this.buildProvidersStatus(),
+      recentEvents,
+      tasks: taskViews,
+    };
+  }
+
+  private buildRunDetails(runId: string): RunDetails {
+    const run = this.store.getRun(runId);
+    const tasks = this.store.listTaskViews(runId);
+    const reports = this.store.listReports(runId);
+    const events = this.store.listEvents(runId, 50);
+    return { run, tasks, reports, events };
+  }
+
+  private buildProvidersStatus(): ProviderStatus[] {
+    // Registered providers from Stage 4 config; no network calls or model exec
+    return [
+      { name: "fake", model: "fake", status: "registered" },
+      { name: "pi", model: "pi", status: "registered" },
+      { name: "qwen4", model: "qwen2.5-coder:7b", status: "registered" },
+      { name: "mistral", model: "mistral", status: "registered" },
+    ];
   }
 
   async shutdown(): Promise<void> {

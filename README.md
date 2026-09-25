@@ -21,6 +21,7 @@ Stan wdrożony po etapie **Stage 3A**:
 | Daemon | Serwer Unix socket, pojedyncza instancja, buforowane JSONL, SQLite z `runId` |
 | Worktrees | Automatyczna izolacja zadań z `write: true`, blokady ścieżek, zachowanie zmian |
 | L0 | Klasyfikacja, kompresja i rekomendacja reasoningu (moduł doradczy; router odroczony) |
+| Dashboard | Terminal TUI (Stage 5) z snapshotami IPC, live events, admin run/abort, macOS Terminal.app launcher |
 
 ## Wymagania
 
@@ -176,6 +177,20 @@ Daemon zarządza stanem w `.pi-many-agents/daemon.sock`, `.pi-many-agents/daemon
 - Bezpieczny start sprawdzający aktywność socketu i tworzący katalog przed bazą.
 - Każdy run identyfikowany przez `requestId` i posiadający niezależny `AbortController`.
 - Zamknięcie daemona najpierw anuluje aktywne procesy, czeka na ich zakończenie, a następnie bezpiecznie zamyka bazę i pliki socket/pid.
+
+## Terminal Dashboard (Stage 5)
+
+Dashboard to klient TUI podłączony wyłącznie przez IPC do daemona (nie czyta SQLite bezpośrednio). Uruchomienie `pi-many-agents dashboard` na macOS otwiera nowe okno Terminal.app; flaga `--inline` wymusza uruchomienie w bieżącym terminalu (dla testów/CI/non-darwin).
+
+```bash
+pi-many-agents dashboard          # macOS: nowe okno Terminal.app
+pi-many-agents dashboard --inline # bieżący terminal (zalecane w testach)
+pi-many-agents dashboard --new-window # wymuś launcher nawet na non-darwin
+```
+
+Klawisze: ↑/k ↓/j wybór runu, Enter=szczegóły, r=refresh, n=uruchom plan (modal), a=abort selected (y/n confirm), x=abort-all (ABORT confirm), q=quit. Zamknięcie dashboardu nie zatrzymuje daemona ani aktywnych runów.
+
+Admin panel pozwala uruchomić plan przez daemon IPC i bezpiecznie anulować wybrane/all runy z potwierdzeniem.
 
 ## Izolacja i znane ograniczenia
 

@@ -25,7 +25,32 @@ export interface IpcStatusRequest {
   requestId?: string;
 }
 
-export type IpcClientRequest = IpcRunRequest | IpcAbortRequest | IpcStatusRequest;
+export interface IpcDashboardSnapshotRequest {
+  version?: number;
+  type: "dashboard.snapshot";
+  requestId?: string;
+}
+
+export interface IpcRunDetailsRequest {
+  version?: number;
+  type: "run.details";
+  requestId?: string;
+  runId: string;
+}
+
+export interface IpcProvidersStatusRequest {
+  version?: number;
+  type: "providers.status";
+  requestId?: string;
+}
+
+export type IpcClientRequest =
+  | IpcRunRequest
+  | IpcAbortRequest
+  | IpcStatusRequest
+  | IpcDashboardSnapshotRequest
+  | IpcRunDetailsRequest
+  | IpcProvidersStatusRequest;
 
 export type IpcResponseType = "ready" | "event" | "result" | "error";
 
@@ -111,6 +136,33 @@ export function parseClientRequest(line: string): IpcClientRequest {
       requestId,
       tasks: parsedPlan.tasks,
       options: (msg.options as RunOptions) ?? {},
+    };
+  }
+
+  if (type === "dashboard.snapshot") {
+    return {
+      version: typeof msg.version === "number" ? msg.version : IPC_PROTOCOL_VERSION,
+      type: "dashboard.snapshot",
+      requestId: typeof msg.requestId === "string" ? msg.requestId : undefined,
+    };
+  }
+
+  if (type === "run.details") {
+    const runId = typeof msg.runId === "string" ? msg.runId : "";
+    if (!runId) throw new Error("run.details requires runId");
+    return {
+      version: typeof msg.version === "number" ? msg.version : IPC_PROTOCOL_VERSION,
+      type: "run.details",
+      requestId: typeof msg.requestId === "string" ? msg.requestId : undefined,
+      runId,
+    };
+  }
+
+  if (type === "providers.status") {
+    return {
+      version: typeof msg.version === "number" ? msg.version : IPC_PROTOCOL_VERSION,
+      type: "providers.status",
+      requestId: typeof msg.requestId === "string" ? msg.requestId : undefined,
     };
   }
 

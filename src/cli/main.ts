@@ -6,6 +6,11 @@ import { parsePlan, validateRunOptions } from "../core/plan.ts";
 import { runTasks } from "../index.ts";
 import type { AgentTask } from "../types.ts";
 import { startDaemon } from "../daemon/server.ts";
+import { launchDashboard } from "../dashboard/launcher.ts";
+import { DashboardIpcClient } from "../dashboard/client.ts";
+import { DashboardApp } from "../dashboard/app.ts";
+import { resolveDaemonSocket } from "../daemon/client.ts";
+import { DEFAULT_SOCKET_PATH } from "../daemon/server.ts";
 
 async function main(): Promise<void> {
   const [command = "help", ...rest] = process.argv.slice(2);
@@ -16,6 +21,7 @@ pi-many-agents decompose <markdown> [--integrate]
 pi-many-agents graph --plan <file>
 pi-many-agents demo
 pi-many-agents daemon
+pi-many-agents dashboard [--inline] [--new-window]
 `);
     return;
   }
@@ -29,6 +35,25 @@ pi-many-agents daemon
   }
   if (command === "daemon") {
     await startDaemon();
+    return;
+  }
+  if (command === "dashboard") {
+    const inline = rest.includes("--inline");
+    const newWindow = rest.includes("--new-window");
+    const launch = launchDashboard({ cwd: process.cwd(), inline, newWindow });
+    if (launch.launched) {
+      process.stdout.write(`${launch.message ?? "launched"}\n`);
+      return;
+    }
+    if (launch.message) process.stderr.write(`${launch.message}\n`);
+    // inline mode
+    const socketPath = resolveDaemonSocket(process.cwd());
+    const client = new DashboardIpcClient({ socketPath }, (ev) => {
+      if (ev.type === "error") process.stderr.write(`[dash] ${ev.error}\n`);
+    });
+    const app = new DashboardApp({ client, inline: true, onExit: () => process.exit(0) });
+    await app.start();
+    // app runs until q
     return;
   }
   if (command === "decompose") {
