@@ -129,14 +129,26 @@ export class Orchestrator {
               worker.state = "cancelled";
               break;
             }
-            report = await worker.run({ ...task, modelPolicy: { ...task.modelPolicy, model: plan.model, reasoning: plan.reasoning, timeoutMs: plan.timeoutMs } });
+            const taskContext = formatDependencyContext(task, reports);
+            report = await worker.run({
+              ...task,
+              context: taskContext,
+              modelPolicy: { ...task.modelPolicy, model: plan.model, reasoning: plan.reasoning, timeoutMs: plan.timeoutMs },
+            });
             if (!retryable(report) || attempt === attempts) break;
             await publish(createMessage("task.progress", worker.id, { attempt, retry: true, error: report.error }, task.id));
           }
           health.record(providerName, report.status === "failed" ? "failed" : worker.state === "cancelled" ? "cancelled" : "completed");
           reports.push(report);
-          const terminal = report.status === "failed" ? "failed" : worker.state === "cancelled" ? "cancelled" : "completed";
-          queue.mark(task.id, terminal === "cancelled" ? "cancelled" : terminal === "failed" ? "failed" : "completed");
+          const terminal: "completed" | "failed" | "cancelled" =
+            report.status === "failed"
+              ? "failed"
+              : worker.state === "cancelled"
+              ? "cancelled"
+              : report.status === "partial"
+              ? "failed"
+              : "completed";
+          queue.mark(task.id, terminal);
           rows.set(task.id, { id: task.id, state: worker.state, title: task.title });
           await publish(createMessage(terminal === "failed" ? "task.failed" : terminal === "cancelled" ? "task.cancelled" : "task.completed", worker.id, {}, task.id));
           await publish(createMessage("report.created", worker.id, { ...report }, task.id));
@@ -228,6 +240,34 @@ export class Orchestrator {
       statusText: `${renderStatus({ workers: manager.workers.length, running, queued, rows: [...rows.values()] })}\n\nHealth:\n${health.snapshot().map((item) => `${item.provider} failed=${item.failed} healthy=${item.healthy}`).join("\n")}`,
     };
   }
+}
+
+function formatDependencyContext(task: AgentTask, reports: AgentReport[], maxCharsPerDep = 2000): string {
+  if (!task.dependencies || task.dependencies.length === 0) return task.context ?? "";
+
+  const depSections: string[] = [];
+  for (const depId of task.dependencies) {
+    const rep = reports.find((r) => r.taskId === depId);
+    if (!rep) continue;
+    let section = `--- Dependency Report: ${rep.taskId} (${rep.status}) ---\nSummary: ${rep.summary}\n`;
+    if (rep.findings && rep.findings.length > 0) {
+      section += `Findings:\n${rep.findings.slice(0, 5).map((f) => `- ${f}`).join("\n")}\n`;
+    }
+    if (rep.changes) {
+      section += `Changes: ${rep.changes.description} (files: ${rep.changes.files.join(", ")})\n`;
+    }
+    if (rep.artifacts && rep.artifacts.length > 0) {
+      section += `Artifacts: ${rep.artifacts.join(", ")}\n`;
+    }
+    if (section.length > maxCharsPerDep) {
+      section = section.slice(0, maxCharsPerDep) + "\n...[truncated]";
+    }
+    depSections.push(section);
+  }
+
+  if (depSections.length === 0) return task.context ?? "";
+  const depContext = `PREVIOUS DEPENDENCY RESULTS:\n${depSections.join("\n")}`;
+  return task.context ? `${task.context}\n\n${depContext}` : depContext;
 }
 
 function retryable(report: AgentReport): boolean {
