@@ -3,7 +3,7 @@
   "project": "pi-many-agents",
   "stage": "4 - lokalne modele: Ollama Qwen4 + Docker Model Runner Mistral",
   "language": "pl",
-  "baseline_commit": "071dfed22cb451c26a8b4e13edeedfcebb2d94b7",
+  "baseline_commit": "7efe635324b028c95873e662e08fa193612f7d33",
   "document_kind": "Instrukcja JSON dla glownego agenta programujacego. Stage ma byc wdrazany z pomoca pi-many-agents, ale ten plik nie jest bezposrednim planem do run --plan ani /many.",
   "role": "Jestes glownym agentem rozwijajacym pi-many-agents. Wdrazaj kod, testy i dokumentacje w istniejacym repozytorium. Uzywaj wielu workerow do niezaleznych pakietow pracy, ale glowny agent odpowiada za integracje. Nie modyfikuj rdzenia Pi.",
   "objective": "Dodaj dwie prawdziwe lokalne sciezki inference: provider qwen4 przez host Ollama oraz provider mistral przez Docker Model Runner z modelem ai/mistral. Obie sciezki maja dzialac bez platnego API, miec jawna detekcje dostepnosci, poprawne anulowanie, usage, timeouty, testy i dokumentacje. Nie wolno stosowac cichego fallbacku do chmury.",
@@ -286,5 +286,6 @@
     "verification": "Dokladne polecenia i wyniki test/typecheck/lint/demo oraz lokalne smoke testy lub NOT AVAILABLE.",
     "no_fallback_proof": "Wskaz testy i kod potwierdzajace brak auto-pull i brak cloud fallbacku.",
     "git": "Wlasne commity, zintegrowane worktrees i finalny status repo."
-  }
+  },
+  "baseline_note": "Baseline uwzglednia niezalezny commit, ktory zmienil nazwe INIT_short na INIT_short.md przed dodaniem tego stage."
 }
