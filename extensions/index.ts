@@ -1,12 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFile } from "node:fs/promises";
-import { connect, type Socket } from "node:net";
+import type { Socket } from "node:net";
 import type { RunResult } from "../src/types.ts";
 import { parsePlan } from "../src/core/plan.ts";
-import {
-  DEFAULT_SOCKET_PATH,
-  DEFAULT_DB_PATH,
-} from "../src/daemon/server.ts";
+import { connectOrStartDaemon } from "../src/daemon/client.ts";
 import {
   JsonLineDecoder,
   encodeIpcMessage,
@@ -16,26 +13,6 @@ import {
 let activeSocket: Socket | undefined;
 let activeAbort: AbortController | undefined;
 let activeRequestId: string | undefined;
-
-function attachDaemon(socketPath = DEFAULT_SOCKET_PATH, timeoutMs = 2000): Promise<Socket> {
-  return new Promise((resolve, reject) => {
-    const socket = connect(socketPath);
-    const timer = setTimeout(() => {
-      socket.destroy();
-      reject(new Error(`Connection to daemon at ${socketPath} timed out`));
-    }, timeoutMs);
-
-    socket.once("connect", () => {
-      clearTimeout(timer);
-      resolve(socket);
-    });
-
-    socket.once("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
-}
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("many", {
@@ -61,9 +38,13 @@ export default function (pi: ExtensionAPI) {
           workspace: task.workspace ?? ctx.cwd,
         }));
 
-        const socket = await attachDaemon();
+        if (ctx.hasUI) ctx.ui.setStatus("many", "pi-many-agents connecting");
+        const daemon = await connectOrStartDaemon({ cwd: ctx.cwd });
+        const socket = daemon.socket;
         activeSocket = socket;
-        if (ctx.hasUI) ctx.ui.setStatus("many", "pi-many-agents attached");
+        if (ctx.hasUI) {
+          ctx.ui.setStatus("many", daemon.started ? "pi-many-agents daemon started" : "pi-many-agents attached");
+        }
 
         const requestId = `many-${Date.now()}`;
         activeRequestId = requestId;
