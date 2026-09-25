@@ -1,185 +1,313 @@
-import { createServer, type Server, type Socket } from "node:net";
-import { mkdir, rm } from "node:fs/promises";
+import { createServer, createConnection, type Server, type Socket } from "node:net";
+import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { existsSync } from "node:fs";
 import { createOrchestrator, loadConfig } from "../index.ts";
 import type { AgentTask, ProtocolMessage, RunOptions, RunResult } from "../types.ts";
 import { createStore, type Store } from "./store.ts";
-import { encodeMessage, parseMessageLine } from "../protocol/messages.ts";
+import {
+  JsonLineDecoder,
+  parseClientRequest,
+  createIpcResponse,
+  encodeIpcMessage,
+  type IpcClientRequest,
+  type IpcResponse,
+} from "../protocol/ipc.ts";
 
-const SOCKET_PATH = ".pi-many-agents/daemon.sock";
-const DB_PATH = ".pi-many-agents/state.db";
-const PID_PATH = ".pi-many-agents/daemon.pid";
+export const DEFAULT_SOCKET_PATH = ".pi-many-agents/daemon.sock";
+export const DEFAULT_DB_PATH = ".pi-many-agents/state.db";
+export const DEFAULT_PID_PATH = ".pi-many-agents/daemon.pid";
 
-interface DaemonMessage {
-  type: "run" | "abort" | "status";
-  tasks?: AgentTask[];
-  options?: RunOptions;
-  requestId?: string;
+export interface DaemonOptions {
+  socketPath?: string;
+  dbPath?: string;
+  pidPath?: string;
 }
 
-interface DaemonResponse {
-  type: "event" | "result" | "error" | "ready";
-  requestId?: string;
-  payload?: unknown;
+interface ActiveRun {
+  abortController: AbortController;
+  promise: Promise<void>;
 }
 
 export class DaemonServer {
   private server?: Server;
   private store: Store;
-  private clients = new Set<Socket>();
-  private abortController = new AbortController();
+  private readonly clients = new Set<Socket>();
+  private readonly clientDecoders = new Map<Socket, JsonLineDecoder>();
+  private readonly activeRuns = new Map<string, ActiveRun>();
+  private readonly socketPath: string;
+  private readonly dbPath: string;
+  private readonly pidPath: string;
   private running = false;
+  private shuttingDown = false;
 
-  constructor() {
-    this.store = createStore(DB_PATH);
+  constructor(options: DaemonOptions = {}) {
+    this.socketPath = options.socketPath ?? DEFAULT_SOCKET_PATH;
+    this.dbPath = options.dbPath ?? DEFAULT_DB_PATH;
+    this.pidPath = options.pidPath ?? DEFAULT_PID_PATH;
+    this.store = createStore(this.dbPath);
   }
 
   async start(): Promise<void> {
-    await mkdir(dirname(SOCKET_PATH), { recursive: true });
-    try {
-      await rm(SOCKET_PATH);
-    } catch {
-      // ignore if not exists
+    await mkdir(dirname(this.socketPath), { recursive: true });
+
+    // Check if another daemon is already actively listening
+    if (existsSync(this.socketPath)) {
+      const isAlive = await this.probeSocket(this.socketPath);
+      if (isAlive) {
+        throw new Error(`Daemon is already running on ${this.socketPath}`);
+      }
+      try {
+        await rm(this.socketPath);
+      } catch {
+        // stale socket removed
+      }
     }
 
     this.server = createServer((socket) => this.handleClient(socket));
     await new Promise<void>((resolve, reject) => {
       this.server!.once("error", reject);
-      this.server!.listen(SOCKET_PATH, () => {
+      this.server!.listen(this.socketPath, () => {
         this.server!.removeListener("error", reject);
         resolve();
       });
     });
 
-    // write pid
-    const { writeFile } = await import("node:fs/promises");
-    await writeFile(PID_PATH, String(process.pid));
-
+    await writeFile(this.pidPath, String(process.pid), "utf8");
     this.setupSignalHandlers();
     this.running = true;
-    console.error(`[daemon] listening on ${SOCKET_PATH}`);
+  }
+
+  private probeSocket(path: string): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const client = createConnection(path);
+      client.once("connect", () => {
+        client.destroy();
+        resolve(true);
+      });
+      client.once("error", () => {
+        resolve(false);
+      });
+      setTimeout(() => {
+        client.destroy();
+        resolve(false);
+      }, 500);
+    });
   }
 
   private setupSignalHandlers(): void {
-    const escalate = async (signal: string) => {
-      console.error(`[daemon] received ${signal}, escalating`);
-      this.abortController.abort();
-      // cancel workers if possible via manager, but here we use signal
-      if (signal === "SIGTERM") {
-        setTimeout(() => {
-          console.error("[daemon] escalating to SIGKILL");
-          process.kill(0, "SIGKILL"); // process group
-        }, 2000);
+    const onSignal = async (sig: string) => {
+      if (this.shuttingDown) return;
+      this.shuttingDown = true;
+      try {
+        await this.shutdown();
+      } finally {
+        process.exit(0);
       }
-      await this.shutdown();
     };
 
-    process.on("SIGTERM", () => escalate("SIGTERM"));
-    process.on("SIGINT", () => escalate("SIGINT"));
-    process.on("SIGHUP", () => escalate("SIGHUP"));
+    process.once("SIGTERM", () => onSignal("SIGTERM"));
+    process.once("SIGINT", () => onSignal("SIGINT"));
+    process.once("SIGHUP", () => onSignal("SIGHUP"));
   }
 
   private handleClient(socket: Socket): void {
     this.clients.add(socket);
-    let buffer = "";
+    const decoder = new JsonLineDecoder();
+    this.clientDecoders.set(socket, decoder);
 
     socket.on("data", (data) => {
-      buffer += data.toString();
-      let idx;
-      while ((idx = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 1);
-        this.handleMessage(socket, line);
+      try {
+        const lines = decoder.push(data);
+        for (const line of lines) {
+          this.handleClientLine(socket, line);
+        }
+      } catch (err) {
+        this.send(socket, createIpcResponse("error", undefined, { error: (err as Error).message }));
       }
     });
 
-    socket.on("close", () => {
+    const cleanupSocket = () => {
       this.clients.delete(socket);
-    });
+      this.clientDecoders.delete(socket);
+    };
 
-    socket.on("error", () => {
-      this.clients.delete(socket);
-    });
+    socket.on("close", cleanupSocket);
+    socket.on("error", cleanupSocket);
 
-    // send ready
-    this.send(socket, { type: "ready" });
+    // Send ready handshake
+    this.send(socket, createIpcResponse("ready"));
   }
 
-  private async handleMessage(socket: Socket, line: string): Promise<void> {
-    const msg = parseMessageLine(line) as unknown as DaemonMessage | undefined;
-    if (!msg || typeof msg !== "object") {
-      this.send(socket, { type: "error", payload: { error: "invalid message" } });
+  private async handleClientLine(socket: Socket, line: string): Promise<void> {
+    let req: IpcClientRequest;
+    try {
+      req = parseClientRequest(line);
+    } catch (err) {
+      this.send(socket, createIpcResponse("error", undefined, { error: (err as Error).message }));
       return;
     }
 
-    if (msg.type === "run" && msg.tasks) {
-      const requestId = msg.requestId ?? `req-${Date.now()}`;
-      try {
-        const config = await loadConfig();
-        const orchestrator = createOrchestrator(config, this.abortController.signal);
-        // attach bus to forward events
-        const unsubscribe = orchestrator.bus.onEvent((event: ProtocolMessage) => {
-          this.store.appendEvent(event);
-          this.broadcast({ type: "event", requestId, payload: event });
-        });
-        const result: RunResult = await orchestrator.run(msg.tasks, {
-          ...msg.options,
-          signal: this.abortController.signal,
-        });
-        unsubscribe?.();
-        for (const report of result.reports) {
-          this.store.saveReport(report);
+    if (req.type === "status") {
+      const status = this.store.getStatus();
+      this.send(
+        socket,
+        createIpcResponse("result", req.requestId, {
+          running: this.running,
+          activeRuns: this.activeRuns.size,
+          ...status,
+        })
+      );
+      return;
+    }
+
+    if (req.type === "abort") {
+      if (req.requestId) {
+        const active = this.activeRuns.get(req.requestId);
+        if (active) {
+          active.abortController.abort();
+          this.send(socket, createIpcResponse("event", req.requestId, { aborted: true }));
+        } else {
+          this.send(socket, createIpcResponse("error", req.requestId, { error: `run ${req.requestId} not found` }));
         }
-        this.send(socket, { type: "result", requestId, payload: result });
-      } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        this.send(socket, { type: "error", requestId, payload: { error } });
+      } else {
+        // Abort all active runs
+        for (const run of this.activeRuns.values()) {
+          run.abortController.abort();
+        }
+        this.send(socket, createIpcResponse("event", undefined, { abortedAll: true }));
       }
-    } else if (msg.type === "abort") {
-      this.abortController.abort();
-      this.send(socket, { type: "event", payload: { aborted: true } });
-    } else if (msg.type === "status") {
-      this.send(socket, { type: "result", payload: { running: this.running, tasks: this.store.listTasks().length } });
+      return;
+    }
+
+    if (req.type === "run") {
+      const requestId = req.requestId;
+      if (this.shuttingDown) {
+        this.send(socket, createIpcResponse("error", requestId, { error: "Daemon is shutting down" }));
+        return;
+      }
+
+      const abortController = new AbortController();
+      let resolveRun!: () => void;
+      const donePromise = new Promise<void>((r) => {
+        resolveRun = r;
+      });
+
+      this.activeRuns.set(requestId, { abortController, promise: donePromise });
+
+      try {
+        // Record run in store
+        this.store.createRun(requestId, { options: req.options, taskCount: req.tasks.length });
+        for (const task of req.tasks) {
+          this.store.upsertTask(requestId, task, "queued");
+        }
+
+        const config = await loadConfig();
+        const orchestrator = createOrchestrator(config, abortController.signal);
+
+        const unsubscribe = orchestrator.bus.onEvent((event: ProtocolMessage) => {
+          this.store.appendEvent(event, requestId);
+          if (event.taskId) {
+            if (event.type === "task.started") {
+              this.store.updateTaskState(requestId, event.taskId, "running");
+            } else if (event.type === "task.completed") {
+              this.store.updateTaskState(requestId, event.taskId, "completed");
+            } else if (event.type === "task.failed") {
+              this.store.updateTaskState(requestId, event.taskId, "failed");
+            } else if (event.type === "task.cancelled") {
+              this.store.updateTaskState(requestId, event.taskId, "cancelled");
+            }
+          }
+          this.broadcast(createIpcResponse("event", requestId, event));
+        });
+
+        let result: RunResult;
+        try {
+          result = await orchestrator.run(req.tasks, {
+            ...req.options,
+            signal: abortController.signal,
+          });
+        } finally {
+          unsubscribe?.();
+        }
+
+        for (const report of result.reports) {
+          this.store.saveReport(requestId, report);
+          const taskState = report.status === "completed" ? "completed" : report.status === "partial" ? "cancelled" : "failed";
+          this.store.updateTaskState(requestId, report.taskId, taskState);
+        }
+
+        const runState = abortController.signal.aborted
+          ? "aborted"
+          : result.reports.some((r) => r.status === "failed")
+          ? "failed"
+          : "completed";
+        this.store.updateRunState(requestId, runState);
+
+        this.send(socket, createIpcResponse("result", requestId, result));
+      } catch (err) {
+        this.store.updateRunState(requestId, "failed");
+        const error = err instanceof Error ? err.message : String(err);
+        this.send(socket, createIpcResponse("error", requestId, { error }));
+      } finally {
+        this.activeRuns.delete(requestId);
+        resolveRun();
+      }
     }
   }
 
-  private send(socket: Socket, resp: DaemonResponse): void {
+  private send(socket: Socket, resp: IpcResponse): void {
+    if (socket.destroyed || !socket.writable) return;
     try {
-      socket.write(JSON.stringify(resp) + "\n");
+      socket.write(encodeIpcMessage(resp));
     } catch {
-      // ignore
+      // ignore broken pipe
     }
   }
 
-  private broadcast(resp: DaemonResponse): void {
+  private broadcast(resp: IpcResponse): void {
     for (const client of this.clients) {
       this.send(client, resp);
     }
   }
 
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     this.running = false;
-    this.abortController.abort();
+
+    // Abort all active runs and wait for them to finish
+    for (const run of this.activeRuns.values()) {
+      run.abortController.abort();
+    }
+    const runningPromises = [...this.activeRuns.values()].map((r) => r.promise);
+    await Promise.allSettled(runningPromises);
+
     for (const client of this.clients) {
       client.destroy();
     }
     this.clients.clear();
+    this.clientDecoders.clear();
+
     if (this.server) {
-      await new Promise<void>((r) => this.server!.close(() => r()));
+      await new Promise<void>((resolve) => {
+        this.server!.close(() => resolve());
+      });
     }
+
     this.store.close();
+
     try {
-      await rm(SOCKET_PATH);
-      await rm(PID_PATH);
+      if (existsSync(this.socketPath)) await rm(this.socketPath);
+      if (existsSync(this.pidPath)) await rm(this.pidPath);
     } catch {
       // ignore
     }
   }
 }
 
-export async function startDaemon(): Promise<void> {
-  const daemon = new DaemonServer();
+export async function startDaemon(options: DaemonOptions = {}): Promise<void> {
+  const daemon = new DaemonServer(options);
   await daemon.start();
-  // keep alive
-  await new Promise(() => {});
+  // Keep alive
+  await new Promise<void>(() => {});
 }

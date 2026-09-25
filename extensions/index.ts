@@ -1,19 +1,39 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFile } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
-import type { AgentTask, ProtocolMessage, RunResult } from "../src/types.ts";
-import { createTask } from "../src/core/task.ts";
-import { encodeMessage } from "../src/protocol/messages.ts";
-
-const SOCKET_PATH = ".pi-many-agents/daemon.sock";
+import type { RunResult } from "../src/types.ts";
+import { parsePlan } from "../src/core/plan.ts";
+import {
+  DEFAULT_SOCKET_PATH,
+  DEFAULT_DB_PATH,
+} from "../src/daemon/server.ts";
+import {
+  JsonLineDecoder,
+  encodeIpcMessage,
+  type IpcResponse,
+} from "../src/protocol/ipc.ts";
 
 let activeSocket: Socket | undefined;
 let activeAbort: AbortController | undefined;
+let activeRequestId: string | undefined;
 
-function attachDaemon(): Promise<Socket> {
+function attachDaemon(socketPath = DEFAULT_SOCKET_PATH, timeoutMs = 2000): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    const sock = connect(SOCKET_PATH, () => resolve(sock));
-    sock.on("error", reject);
+    const socket = connect(socketPath);
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`Connection to daemon at ${socketPath} timed out`));
+    }, timeoutMs);
+
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+
+    socket.once("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
@@ -26,82 +46,113 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /many plans/stage-2.json", "warning");
         return;
       }
+
       activeAbort?.abort();
       activeAbort = new AbortController();
       activeSocket?.destroy();
+
       try {
-        const raw = JSON.parse(await readFile(planPath, "utf8")) as {
-          tasks: Array<Partial<AgentTask> & Pick<AgentTask, "id" | "title" | "objective">>;
-          provider?: string;
-        };
-        const tasks = raw.tasks.map((task) => createTask({ ...task, workspace: task.workspace ?? ctx.cwd }));
+        const fileContent = await readFile(planPath, "utf8");
+        const parsedPlan = parsePlan(fileContent);
+
+        // Adjust workspace to cwd for each task if not explicitly set
+        const tasks = parsedPlan.tasks.map((task) => ({
+          ...task,
+          workspace: task.workspace ?? ctx.cwd,
+        }));
+
         const socket = await attachDaemon();
         activeSocket = socket;
         if (ctx.hasUI) ctx.ui.setStatus("many", "pi-many-agents attached");
 
-        const reports: RunResult["reports"] = [];
-        let finished = false;
+        const requestId = `many-${Date.now()}`;
+        activeRequestId = requestId;
 
-        const send = (obj: unknown) => {
-          socket.write(JSON.stringify(obj) + "\n");
-        };
+        const decoder = new JsonLineDecoder();
 
-        const onData = (data: Buffer) => {
-          const lines = data.toString().split("\n").filter(Boolean);
-          for (const line of lines) {
+        const result = await new Promise<RunResult>((resolve, reject) => {
+          const onData = (chunk: Buffer) => {
             try {
-              const msg = JSON.parse(line);
-              if (msg.type === "event" && msg.payload) {
-                const ev = msg.payload as ProtocolMessage;
-                if (ev.type === "report.created") {
-                  // reports come via result too
+              const lines = decoder.push(chunk);
+              for (const line of lines) {
+                const msg = JSON.parse(line) as IpcResponse;
+                if (msg.requestId && msg.requestId !== requestId) continue;
+                if (msg.type === "result" && msg.payload) {
+                  cleanup();
+                  resolve(msg.payload as RunResult);
+                  return;
                 }
-              } else if (msg.type === "result" && msg.payload) {
-                const res = msg.payload as RunResult;
-                reports.push(...res.reports);
-                finished = true;
-              } else if (msg.type === "error") {
-                ctx.ui.notify(String(msg.payload?.error ?? "daemon error"), "error");
-                finished = true;
+                if (msg.type === "error") {
+                  cleanup();
+                  const errPayload = msg.payload as { error?: string } | undefined;
+                  reject(new Error(errPayload?.error ?? "daemon error"));
+                  return;
+                }
               }
+            } catch (err) {
+              cleanup();
+              reject(err);
+            }
+          };
+
+          const onClose = () => {
+            cleanup();
+            reject(new Error("Daemon socket closed unexpectedly"));
+          };
+
+          const onError = (err: Error) => {
+            cleanup();
+            reject(err);
+          };
+
+          const onAbort = () => {
+            try {
+              socket.write(encodeIpcMessage({ type: "abort", requestId }));
             } catch {
-              // ignore parse
+              // ignore
             }
-          }
-        };
+            cleanup();
+            reject(new Error("Execution cancelled by user"));
+          };
 
-        socket.on("data", onData);
+          const cleanup = () => {
+            socket.off("data", onData);
+            socket.off("close", onClose);
+            socket.off("error", onError);
+            activeAbort?.signal.removeEventListener("abort", onAbort);
+          };
 
-        send({
-          type: "run",
-          tasks,
-          options: { provider: raw.provider ?? "fake", workspace: ctx.cwd, signal: undefined },
-          requestId: `many-${Date.now()}`,
+          socket.on("data", onData);
+          socket.on("close", onClose);
+          socket.on("error", onError);
+          activeAbort?.signal.addEventListener("abort", onAbort, { once: true });
+
+          // Send run command
+          socket.write(
+            encodeIpcMessage({
+              type: "run",
+              requestId,
+              tasks,
+              options: {
+                provider: parsedPlan.provider ?? "fake",
+                workspace: ctx.cwd,
+                maxConcurrentWorkers: parsedPlan.concurrency,
+                maxRetries: parsedPlan.maxRetries,
+              },
+            })
+          );
         });
 
-        // wait for result or abort
-        await new Promise<void>((resolve) => {
-          const check = setInterval(() => {
-            if (finished || activeAbort?.signal.aborted) {
-              clearInterval(check);
-              resolve();
-            }
-          }, 100);
-          activeAbort?.signal.addEventListener("abort", () => {
-            send({ type: "abort" });
-            clearInterval(check);
-            resolve();
-          }, { once: true });
-        });
-
-        socket.off("data", onData);
         if (ctx.hasUI) ctx.ui.setStatus("many", undefined);
 
-        const compact = reports.map((report) => {
-          const findings = report.findings?.slice(0, 3).map((item) => `- ${item}`).join("\n") ?? "";
-          return `#${report.taskId} ${report.status}: ${report.summary}${findings ? `\n${findings}` : ""}`;
-        }).join("\n");
-        ctx.ui.notify(`pi-many-agents finished ${reports.length} tasks`, "info");
+        const compact = result.reports
+          .map((report) => {
+            const findings = report.findings?.slice(0, 3).map((item) => `- ${item}`).join("\n") ?? "";
+            return `#${report.taskId} ${report.status}: ${report.summary}${findings ? `\n${findings}` : ""}`;
+          })
+          .join("\n");
+
+        ctx.ui.notify(`pi-many-agents finished ${result.reports.length} tasks`, "info");
         pi.sendMessage({
           customType: "pi-many-agents",
           content: `Worker reports:\n${compact}`,
@@ -109,7 +160,12 @@ export default function (pi: ExtensionAPI) {
         });
       } catch (error) {
         if (ctx.hasUI) ctx.ui.setStatus("many", undefined);
-        ctx.ui.notify(error instanceof Error ? error.message : "pi-many-agents attach failed", "error");
+        ctx.ui.notify(error instanceof Error ? error.message : "pi-many-agents execution failed", "error");
+      } finally {
+        activeSocket?.destroy();
+        activeSocket = undefined;
+        activeAbort = undefined;
+        activeRequestId = undefined;
       }
     },
   });
@@ -117,7 +173,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     if (activeSocket && !activeSocket.destroyed) {
       try {
-        activeSocket.write(JSON.stringify({ type: "abort" }) + "\n");
+        if (activeRequestId) {
+          activeSocket.write(encodeIpcMessage({ type: "abort", requestId: activeRequestId }));
+        }
       } catch {
         // ignore
       }
@@ -126,5 +184,6 @@ export default function (pi: ExtensionAPI) {
     activeAbort?.abort();
     activeSocket = undefined;
     activeAbort = undefined;
+    activeRequestId = undefined;
   });
 }
