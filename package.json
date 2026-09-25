@@ -1,0 +1,43 @@
+{
+  "name": "pi-many-agents",
+  "version": "0.1.0",
+  "description": "External orchestrator that lets one Pi session run isolated worker agents in parallel.",
+  "type": "module",
+  "bin": {
+    "pi-many-agents": "./bin/pi-many-agents.js"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./extension": "./extensions/index.ts"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "demo": "node --experimental-strip-types src/cli/main.ts demo",
+    "lint": "node --experimental-strip-types scripts/lint.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.13.6",
+    "typescript": "^5.8.3"
+  }
+}

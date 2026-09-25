@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.pi-many-agents/
+*.log
+.DS_Store
+.pi/

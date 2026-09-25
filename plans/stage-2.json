@@ -1,0 +1,125 @@
+{
+  "stage": 2,
+  "provider": "fake",
+  "notes": "First dogfood workload. Independent reviews can run in parallel. Integration tasks wait on reviews. Switch provider to pi only for semantic review tasks after a human accepts the cost.",
+  "tasks": [
+    {
+      "id": "scheduler-review",
+      "title": "Review scheduler",
+      "objective": "Review TaskQueue dependency handling, priority ordering, and failure propagation. List concrete bugs or missing cases.",
+      "type": "review",
+      "priority": 2,
+      "dependencies": [],
+      "relevantFiles": ["src/core/scheduler.ts", "src/core/orchestrator.ts"],
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "provider-review",
+      "title": "Review provider abstraction",
+      "objective": "Review AgentProvider, FakeProvider, and PiProvider. Check capability advertising and whether the scheduler hardcodes provider behavior.",
+      "type": "review",
+      "priority": 2,
+      "dependencies": [],
+      "relevantFiles": ["src/providers/types.ts", "src/providers/pi.ts", "src/providers/fake.ts"],
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "test-review",
+      "title": "Find missing tests",
+      "objective": "Read test/orchestrator.test.ts and name missing coverage for cleanup, concurrency, and report parsing.",
+      "type": "test",
+      "priority": 1,
+      "dependencies": [],
+      "relevantFiles": ["test/orchestrator.test.ts"],
+      "modelPolicy": { "reasoning": "low" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "low"
+    },
+    {
+      "id": "protocol-review",
+      "title": "Review protocol and reports",
+      "objective": "Review protocol versioning, malformed output handling, and AgentReport fields against docs/protocol.md.",
+      "type": "review",
+      "priority": 1,
+      "dependencies": [],
+      "relevantFiles": ["src/protocol/messages.ts", "src/protocol/report.ts", "docs/protocol.md"],
+      "modelPolicy": { "reasoning": "low" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "low"
+    },
+    {
+      "id": "process-review",
+      "title": "Review process management",
+      "objective": "Review timeout, cancellation, and cleanup in ProcessManager. Note zombie and signal risks.",
+      "type": "review",
+      "priority": 2,
+      "dependencies": [],
+      "relevantFiles": ["src/process/process-manager.ts"],
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "context-review",
+      "title": "Review task packet isolation",
+      "objective": "Review renderTaskPacket and confirm workers are not given parent conversation state.",
+      "type": "inspect",
+      "priority": 1,
+      "dependencies": [],
+      "relevantFiles": ["src/core/task.ts", "extensions/index.ts"],
+      "modelPolicy": { "reasoning": "low" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "low"
+    },
+    {
+      "id": "telemetry-review",
+      "title": "Review telemetry",
+      "objective": "Check that task telemetry records provider, model, reasoning, duration, status, and token fields when present.",
+      "type": "inspect",
+      "priority": 0,
+      "dependencies": [],
+      "relevantFiles": ["src/core/orchestrator.ts", "src/telemetry/logger.ts"],
+      "modelPolicy": { "reasoning": "none" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "none"
+    },
+    {
+      "id": "extension-review",
+      "title": "Review Pi command integration",
+      "objective": "Review /many lifecycle against docs/pi-integration.md. Confirm factory does not spawn processes.",
+      "type": "review",
+      "priority": 1,
+      "dependencies": ["context-review"],
+      "relevantFiles": ["extensions/index.ts", "docs/pi-integration.md"],
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "retry-design",
+      "title": "Design retries and health",
+      "objective": "Propose a minimal retry and worker-health design that fits Stage 1 interfaces. Do not implement yet in this task; return a report only.",
+      "type": "research",
+      "priority": 0,
+      "dependencies": ["scheduler-review", "process-review", "provider-review"],
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "integrate-findings",
+      "title": "Integrate Stage 2 findings",
+      "objective": "Read reports from the review tasks and produce a single ordered change list for the primary agent. Do not edit Pi core.",
+      "type": "other",
+      "priority": 3,
+      "dependencies": ["scheduler-review", "provider-review", "test-review", "protocol-review", "process-review", "extension-review", "telemetry-review", "retry-design"],
+      "modelPolicy": { "reasoning": "high" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "high"
+    }
+  ]
+}
