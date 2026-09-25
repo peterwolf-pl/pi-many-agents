@@ -1,0 +1,290 @@
+{
+  "prompt_version": "1.0",
+  "project": "pi-many-agents",
+  "stage": "4 - lokalne modele: Ollama Qwen4 + Docker Model Runner Mistral",
+  "language": "pl",
+  "baseline_commit": "071dfed22cb451c26a8b4e13edeedfcebb2d94b7",
+  "document_kind": "Instrukcja JSON dla glownego agenta programujacego. Stage ma byc wdrazany z pomoca pi-many-agents, ale ten plik nie jest bezposrednim planem do run --plan ani /many.",
+  "role": "Jestes glownym agentem rozwijajacym pi-many-agents. Wdrazaj kod, testy i dokumentacje w istniejacym repozytorium. Uzywaj wielu workerow do niezaleznych pakietow pracy, ale glowny agent odpowiada za integracje. Nie modyfikuj rdzenia Pi.",
+  "objective": "Dodaj dwie prawdziwe lokalne sciezki inference: provider qwen4 przez host Ollama oraz provider mistral przez Docker Model Runner z modelem ai/mistral. Obie sciezki maja dzialac bez platnego API, miec jawna detekcje dostepnosci, poprawne anulowanie, usage, timeouty, testy i dokumentacje. Nie wolno stosowac cichego fallbacku do chmury.",
+  "baseline_state": {
+    "current_local_providers": [
+      "src/providers/ollama.ts jest generycznym klientem Ollama, ale w createOrchestrator rejestrowany jest jako gemma4 z modelem gemma4:latest.",
+      "src/providers/docker-mistral.ts nie korzysta z Docker Model Runner. Uruchamia kontener ollama/ollama na porcie 11435 i moze wykonywac ollama pull.",
+      "Provider mistral wysyla obecnie zadania do endpointu Ollama /api/chat zamiast do API Docker Model Runner.",
+      "README opisuje gemma4 i mistral jako lokalne adaptery, ale sam wskazuje, ze automatyczny start Mistrala nie jest poprawna sciezka runnera."
+    ],
+    "quality_gate": "Na baseline README deklaruje 52 testy, typecheck, lint i demo jako przechodzace. Zweryfikuj to ponownie przed zmianami."
+  },
+  "verified_external_contracts": {
+    "docker_model_runner": {
+      "host_openai_base_url": "http://127.0.0.1:12434/engines/v1",
+      "list_models": "GET /models",
+      "chat_completions": "POST /chat/completions",
+      "model_id": "ai/mistral",
+      "request_shape": {
+        "model": "ai/mistral",
+        "messages": [
+          {
+            "role": "user",
+            "content": "<task packet>"
+          }
+        ],
+        "stream": false
+      },
+      "response_shape": "OpenAI-compatible choices[0].message.content oraz usage.prompt_tokens / usage.completion_tokens.",
+      "provisioning_rule": "Model Runner musi byc wlaczony, a model ai/mistral lokalnie dostepny. Nie pobieraj modelu automatycznie z kodu orkiestratora."
+    },
+    "ollama": {
+      "default_base_url": "http://127.0.0.1:11434",
+      "endpoints": [
+        "GET /api/tags",
+        "POST /api/show",
+        "POST /api/chat"
+      ],
+      "provider_alias": "qwen4",
+      "model_resolution_rule": "Nie zakladaj, ze istnieje oficjalny tag qwen4:latest. Najpierw sprawdz lokalne tagi lub jawna konfiguracje. Nie podstawiaj qwen:4b, Qwen3.x ani preview pod nazwe Qwen4 bez wyraznej konfiguracji uzytkownika.",
+      "provisioning_rule": "Nie wykonuj ollama pull automatycznie."
+    }
+  },
+  "hard_rules": [
+    "Zero cichego fallbacku do platnych lub zdalnych providerow.",
+    "Zero automatycznego pobierania modeli przez Ollama lub Docker.",
+    "Zero automatycznego uruchamiania starego kontenera ollama/ollama dla Mistrala.",
+    "Brak sekretow i kluczy API w repo. Lokalne backendy nie wymagaja klucza.",
+    "Provider available() ma sprawdzac faktyczny backend i faktycznie wybrany model.",
+    "Task-level model override musi byc walidowany dla konkretnego modelu, a nie tylko dla domyslnego modelu providera.",
+    "Timeout i cancel maja anulowac tylko konkretnego workera.",
+    "Brak modyfikacji Pi core.",
+    "Nie deklaruj realnego smoke testu, jesli lokalny model nie byl faktycznie uruchomiony."
+  ],
+  "startup": [
+    "Przeczytaj AGENTS.md, jesli istnieje, README.md, src/providers, src/index.ts, src/config/config.ts, src/core/plan.ts, src/core/orchestrator.ts, src/core/worker-manager.ts oraz testy providerow.",
+    "Porownaj HEAD z baseline_commit. Zachowaj cudze zmiany i nie odtwarzaj napraw juz obecnych na main.",
+    "Uruchom npm test, npm run typecheck, npm run lint i npm run demo. Zapisz wyniki i wersje Node.",
+    "Sprawdz rzeczywisty stan lokalny poleceniami read-only, jesli sa dostepne: ollama list, docker model status, docker model list. Brak narzedzia lub modelu oznacz NOT AVAILABLE, nie blad calego wdrozenia.",
+    "Nie wykonuj automatycznie ollama pull ani docker model pull.",
+    "Przed integracja zmian sprawdz git status i zachowaj wszystkie cudze modyfikacje."
+  ],
+  "many_agents_execution": {
+    "max_initial_parallel_workers": 2,
+    "rule": "Najpierw dwa niezalezne pakiety providerow moga byc wykonywane rownolegle w osobnych worktrees. Glowny agent nastepnie jawnie integruje wybrane commity lub zmiany. Nie zakladaj auto-merge.",
+    "workers": [
+      {
+        "id": "qwen4-worker",
+        "scope": [
+          "src/providers/ollama.ts",
+          "test/ollama.test.ts"
+        ],
+        "task": "Wdrozenie i testy providera qwen4 przez Ollama, bez zmian w Docker Mistral.",
+        "reasoning": "medium"
+      },
+      {
+        "id": "docker-mistral-worker",
+        "scope": [
+          "src/providers/docker-mistral.ts",
+          "test/mistral.test.ts"
+        ],
+        "task": "Migracja Mistrala z kontenera Ollama na Docker Model Runner OpenAI-compatible API.",
+        "reasoning": "medium"
+      }
+    ],
+    "integration": {
+      "owner": "glowny agent",
+      "reasoning": "high",
+      "scope": [
+        "src/index.ts",
+        "src/config/config.ts",
+        "src/core/plan.ts",
+        "src/cli/main.ts",
+        "README.md",
+        "docs/decisions",
+        "test"
+      ],
+      "rule": "Po raportach workerow zintegrowac zmiany, rozwiazac kontrakty konfiguracji i uruchomic cala bramke jakosci."
+    }
+  },
+  "work_packages": [
+    {
+      "id": "P1",
+      "title": "Kontrakt konfiguracji lokalnych modeli",
+      "depends_on": [],
+      "requirements": [
+        "Zaprojektuj minimalna, typowana konfiguracje dla Ollama Qwen4 i Docker Model Runner Mistral. Preferuj istniejacy plik .pi-many-agents.json zamiast nowych globalnych plikow.",
+        "Konfiguracja musi pozwalac ustawic baseUrl i model dla obu backendow.",
+        "Dla Mistrala ustaw bezpieczne domyslne wartosci zgodne z Docker Model Runner: baseUrl http://127.0.0.1:12434/engines/v1 i model ai/mistral.",
+        "Dla Qwen4 nie wymyslaj stabilnego oficjalnego tagu. Jesli model nie jest jawnie skonfigurowany, resolver moze szukac lokalnego exact/prefix qwen4 w /api/tags. Gdy nie znajdzie, provider ma byc niedostepny z czytelnym komunikatem diagnostycznym.",
+        "Zachowaj kompatybilnosc istniejacej konfiguracji. Brak nowych pol nie moze psuc fake ani pi."
+      ],
+      "acceptance": [
+        "Konfiguracja lokalna ma jawne typy i defaulty tam, gdzie sa potwierdzone.",
+        "Brak skonfigurowanego Qwen4 nie powoduje podstawienia innej rodziny modelu.",
+        "Nie ma wymogu klucza API."
+      ]
+    },
+    {
+      "id": "P2",
+      "title": "Provider Ollama Qwen4",
+      "depends_on": [
+        "P1"
+      ],
+      "files": [
+        "src/providers/ollama.ts",
+        "src/index.ts",
+        "test/ollama.test.ts"
+      ],
+      "requirements": [
+        "Zarejestruj provider alias qwen4 w createOrchestrator.",
+        "Zachowaj OllamaProvider jako generyczny adapter HTTP, ale popraw rozdzielenie configured model, task override i effective model.",
+        "available() lub rownowazna walidacja ma sprawdzac model, ktory faktycznie bedzie uruchomiony.",
+        "Sprawdz GET /api/tags i POST /api/show dla effective model. Niedostepny model konczy sie kontrolowanym failed przed semantycznym wykonaniem.",
+        "POST /api/chat ma uzywac stream:false, renderTaskPacket(task), per-worker AbortController i timeoutu zadania.",
+        "Parsuj prompt_eval_count i eval_count do usage tylko wtedy, gdy sa liczbami.",
+        "Nie zmieniaj coding/toolUse/filesystem/shell na true. Ten provider pozostaje text-only bez narzedzi.",
+        "Nie uruchamiaj ollama serve i nie pobieraj modelu automatycznie."
+      ],
+      "acceptance": [
+        "--provider qwen4 wybiera lokalny adapter Ollama.",
+        "Stub /api/tags + /api/show + /api/chat daje completed i poprawne usage.",
+        "Brak tagu daje provider unavailable/failed bez zadnego cloud fallbacku.",
+        "Task model override jest sprawdzany i wykonywany jako ten sam effective model.",
+        "Cancel jednego workera nie anuluje drugiego."
+      ]
+    },
+    {
+      "id": "P3",
+      "title": "Docker Model Runner Mistral",
+      "depends_on": [
+        "P1"
+      ],
+      "files": [
+        "src/providers/docker-mistral.ts",
+        "src/index.ts",
+        "test/mistral.test.ts"
+      ],
+      "requirements": [
+        "Usun logike docker run ollama/ollama, docker start starego kontenera, mapowanie portu 11435 i ollama pull.",
+        "Provider mistral ma korzystac bezposrednio z Docker Model Runner OpenAI-compatible API.",
+        "Domyslny base URL to http://127.0.0.1:12434/engines/v1, a domyslny model to ai/mistral.",
+        "available() sprawdza GET /models i potwierdza exact model id. Nie traktuj samego HTTP 200 jako dostepnosci modelu.",
+        "execute() wysyla POST /chat/completions z model, messages i stream:false.",
+        "Parsuj choices[0].message.content oraz usage.prompt_tokens i usage.completion_tokens.",
+        "Obsluz puste choices, niepoprawny JSON, HTTP != 2xx, timeout i cancel jako kontrolowane raporty.",
+        "Nie wymagaj docker CLI do normalnego inference. Docker CLI moze byc uzyty tylko opcjonalnie do diagnostyki/smoke testu, nie w krytycznej sciezce providera.",
+        "Nie wykonuj docker model pull z kodu."
+      ],
+      "acceptance": [
+        "--provider mistral korzysta z portu 12434 i endpointu /engines/v1/chat/completions.",
+        "Test potwierdza, ze stary endpoint /api/chat nie jest uzywany.",
+        "Test potwierdza exact ai/mistral na liscie modeli.",
+        "Usage jest mapowane z formatu OpenAI-compatible.",
+        "Brak Docker Model Runner albo modelu daje jawny failed/unavailable bez startowania kontenera."
+      ]
+    },
+    {
+      "id": "P4",
+      "title": "Registry, routing i ergonomia CLI",
+      "depends_on": [
+        "P2",
+        "P3"
+      ],
+      "files": [
+        "src/index.ts",
+        "src/config/config.ts",
+        "src/core/plan.ts",
+        "src/cli/main.ts",
+        "src/providers/catalog.ts"
+      ],
+      "requirements": [
+        "Provider registry ma rejestrowac qwen4 i mistral z konfiguracji, nie z zaszytych rozproszonych wartosci.",
+        "Precedencja wyboru providera pozostaje zgodna z projektem: CLI override > plan.provider > config.defaultProvider.",
+        "Nie dodawaj automatycznego routingu z pi/openai/antigravity do lokalnego modelu ani odwrotnie w tym stage.",
+        "Uzupelnij help CLI tak, aby nie sugerowal tylko fake|pi, jesli parser przyjmuje dowolna nazwe z registry.",
+        "Jesli sensowne bez rozbudowy zakresu, dodaj lekka komende provider status lub doctor pokazujaca tylko: registered, endpoint reachable, model available. Nie pobieraj modeli i nie zmieniaj systemu."
+      ],
+      "acceptance": [
+        "Plan z provider:qwen4 oraz plan z provider:mistral dochodza do wlasciwego adaptera.",
+        "CLI help nie klamie o dostepnych providerach.",
+        "Brak lokalnego modelu nie powoduje zmiany providera."
+      ]
+    },
+    {
+      "id": "P5",
+      "title": "Testy regresyjne i lokalny smoke test",
+      "depends_on": [
+        "P2",
+        "P3",
+        "P4"
+      ],
+      "requirements": [
+        "Rozbuduj testy z mock fetch dla obu providerow bez wymagania lokalnych modeli w CI.",
+        "Dodaj przypadki: model missing, endpoint down, HTTP error, empty response, invalid response, timeout, cancel, task-level model override, usage mapping.",
+        "Dodaj test, ktory chroni przed powrotem starego zachowania Docker Mistral przez Ollama /api/chat.",
+        "Dodaj test orkiestratora/registry, ze provider qwen4 i mistral sa wybieralne po nazwie.",
+        "Jesli lokalnie dostepny jest skonfigurowany Qwen4, wykonaj jeden read-only smoke task.",
+        "Jesli Docker Model Runner i ai/mistral sa dostepne, wykonaj jeden read-only smoke task.",
+        "Jesli backend nie jest dostepny, raportuj SKIPPED/NOT AVAILABLE. Nie pobieraj modelu na potrzeby testu."
+      ],
+      "acceptance": [
+        "npm test przechodzi bez zewnetrznych modeli.",
+        "npm run typecheck, npm run lint i npm run demo przechodza.",
+        "Smoke testy lokalne sa raportowane oddzielnie od unit tests."
+      ]
+    },
+    {
+      "id": "P6",
+      "title": "Dokumentacja i ADR",
+      "depends_on": [
+        "P2",
+        "P3",
+        "P4",
+        "P5"
+      ],
+      "files": [
+        "README.md",
+        "docs/architecture.md",
+        "docs/roadmap.md",
+        "docs/decisions"
+      ],
+      "requirements": [
+        "Zaktualizuj tabele providerow. Usun opis Mistrala jako kontenera Ollama na porcie 11435.",
+        "Dodaj minimalna konfiguracje qwen4 i mistral oraz przyklady uruchomienia planu.",
+        "Dla Qwen4 jasno napisz, ze nazwa providera nie jest gwarancja istnienia oficjalnego tagu w registry. Uzytkownik musi miec lokalny model zgodny z konfiguracja.",
+        "Dla Mistrala opisz wymaganie wlaczonego Docker Model Runner, host TCP 12434 i lokalnego modelu ai/mistral.",
+        "Dodaj ADR wyjasniajacy: host Ollama dla Qwen4, Docker Model Runner dla Mistrala, brak auto-pull, brak cloud fallbacku i text-only capabilities.",
+        "Nie dodawaj marketingowych deklaracji o oszczednosci tokenow bez pomiaru."
+      ],
+      "acceptance": [
+        "README opisuje rzeczywisty kod po wdrozeniu.",
+        "ADR wskazuje granice odpowiedzialnosci providerow i provisioning pozostawiony uzytkownikowi.",
+        "Nie ma instrukcji wymagajacej platnego API."
+      ]
+    }
+  ],
+  "integration_order": [
+    "P1: kontrakt konfiguracji.",
+    "Rownolegle P2 i P3 w osobnych worktrees.",
+    "Glowny agent integruje P2 i P3 jawnie.",
+    "P4: registry i CLI.",
+    "P5: regresje i opcjonalne realne smoke testy.",
+    "P6: README, architecture, roadmap i ADR.",
+    "Pelna bramka jakosci oraz finalny git diff."
+  ],
+  "definition_of_done": [
+    "Provider qwen4 istnieje i komunikuje sie z lokalnym Ollama bez auto-pull.",
+    "Provider mistral komunikuje sie z Docker Model Runner przez OpenAI-compatible API i model ai/mistral.",
+    "Kod nie uruchamia juz ollama/ollama jako implementacji Docker Mistral.",
+    "Oba providery maja per-worker cancel, timeout, kontrolowane bledy i usage.",
+    "Brak modelu lokalnego jest stanem jawnym, a nie powodem do chmurowego fallbacku.",
+    "Unit tests nie potrzebuja zainstalowanych modeli.",
+    "README i ADR sa zgodne z faktyczna implementacja.",
+    "npm test, npm run typecheck, npm run lint i npm run demo przechodza albo konkretna blokada zostaje udokumentowana."
+  ],
+  "final_report_format": {
+    "implemented": "P1-P6 z lista zmienionych plikow i krotkim opisem.",
+    "providers": "qwen4: endpoint, effective model, available status. mistral: endpoint, model id, available status.",
+    "verification": "Dokladne polecenia i wyniki test/typecheck/lint/demo oraz lokalne smoke testy lub NOT AVAILABLE.",
+    "no_fallback_proof": "Wskaz testy i kod potwierdzajace brak auto-pull i brak cloud fallbacku.",
+    "git": "Wlasne commity, zintegrowane worktrees i finalny status repo."
+  }
+}
