@@ -1,10 +1,10 @@
 {
-  "prompt_version": "1.0",
+  "prompt_version": "1.1",
   "project": "pi-many-agents",
   "stage": "5 - terminal dashboard + admin panel",
   "language": "pl",
   "baseline_commit": "814f58ae836f53642f8ce2d505fe640d77f83d61",
-  "document_kind": "Instrukcja JSON dla glownego agenta programujacego. Stage ma byc wdrazany z pomoca pi-many-agents. Nie jest bezposrednim planem do run --plan ani /many.",
+  "document_kind": "Hybrydowa instrukcja JSON i bezposrednio uruchamialny plan pi-many-agents. Pelna specyfikacja pozostaje w work_packages, a pole tasks zawiera wykonawczy plan dla /many i run --plan.",
   "role": "Jestes glownym agentem rozwijajacym pi-many-agents. Zbuduj lokalny terminalowy Dashboard z panelem admin, ktory dziala jako osobny proces i laczy sie z istniejacym daemonem. Dashboard ma byc uruchamiany z CLI w nowym oknie Terminal.app na macOS. Zachowaj architekture zewnetrznego orkiestratora i nie modyfikuj rdzenia Pi.",
   "objective": "Dodaj czytelny, szybki TUI do obserwacji i kontrolowania pi-many-agents: stan daemona, runy, taski/workery, providery, reasoning, modele, kolejke, postep, usage, bledy i event log. Panel admin ma pozwalac bezpiecznie uruchomic plan, anulowac wybrany run, odswiezyc dane i podejrzec szczegoly. Domyslna komenda dashboard na macOS otwiera nowa karte/okno Terminal.app z TUI; tryb --inline uruchamia go w biezacym terminalu i sluzy do testow oraz innych systemow.",
   "product_shape": {
@@ -333,5 +333,169 @@
     "verification": "Dokladne komendy i wyniki test/typecheck/lint/demo, plus E2E daemon-dashboard.",
     "remaining": "Tylko realne ograniczenia. Web UI, edit config, auto-merge i zdalny panel maja pozostac poza zakresem.",
     "git": "Wlasne commity, zintegrowane worktrees i finalny status repo."
-  }
+  },
+  "provider": "pi",
+  "concurrency": 3,
+  "maxRetries": 1,
+  "tasks": [
+    {
+      "id": "dashboard-audit",
+      "title": "Audit daemon and dashboard integration points",
+      "objective": "Przeanalizuj aktualny HEAD po Stage 4. Sprawdz daemon IPC, store, CLI, extension i testy. Ustal minimalne zmiany potrzebne do terminalowego Dashboardu z panelem admin. Zwroc konkretne kontrakty IPC, DTO snapshotu, ryzyka kompatybilnosci i liste plikow. Nie modyfikuj kodu.",
+      "type": "inspect",
+      "priority": 3,
+      "dependencies": [],
+      "relevantFiles": [
+        "src/daemon/server.ts",
+        "src/daemon/store.ts",
+        "src/protocol/ipc.ts",
+        "src/cli/main.ts",
+        "extensions/index.ts",
+        "src/types.ts",
+        "README.md"
+      ],
+      "constraints": [
+        "Nie modyfikuj Pi core.",
+        "Dashboard ma byc klientem daemona, nie drugim orchestrator-em.",
+        "Nie czytaj aktywnej SQLite bezposrednio jako glownego API Dashboardu.",
+        "Uwzglednij najnowsze zmiany Stage 4."
+      ],
+      "expectedOutput": "Zwarty raport architektoniczny: IPC commands/DTO, pliki do zmiany, kompatybilnosc, ryzyka i kryteria testow.",
+      "modelPolicy": {
+        "reasoning": "low",
+        "timeoutMs": 120000
+      },
+      "permissions": {
+        "read": true,
+        "write": false,
+        "shell": false,
+        "network": false,
+        "git": false
+      }
+    },
+    {
+      "id": "dashboard-tui-design",
+      "title": "Design terminal dashboard UX and state model",
+      "objective": "Zaprojektuj techniczny TUI dla pi-many-agents. Zdefiniuj state reducer, panele RUNS, TASKS/WORKERS, PROVIDERS, EVENTS i ADMIN, sterowanie klawiszami, reconnect, sanitizacje ANSI, zachowanie dla 80x24 i 140x40 oraz lifecycle raw mode. Nie implementuj jeszcze kodu.",
+      "type": "research",
+      "priority": 2,
+      "dependencies": [],
+      "relevantFiles": [
+        "plans/stage-5-terminal-dashboard-admin.prompt.json",
+        "src/types.ts",
+        "src/protocol/ipc.ts",
+        "src/telemetry/status.ts"
+      ],
+      "constraints": [
+        "Preferuj Node standard library, bez web UI i Electron.",
+        "Nie uzywaj LLM do renderowania ani obslugi klawiszy.",
+        "Zamkniecie TUI nie moze zatrzymac daemona ani runow."
+      ],
+      "expectedOutput": "Konkretny model stanu, layout, keymap, lifecycle i test matrix dla TUI.",
+      "modelPolicy": {
+        "reasoning": "medium",
+        "timeoutMs": 120000
+      },
+      "permissions": {
+        "read": true,
+        "write": false,
+        "shell": false,
+        "network": false,
+        "git": false
+      }
+    },
+    {
+      "id": "dashboard-macos-design",
+      "title": "Design safe macOS Terminal launcher",
+      "objective": "Zaprojektuj bezpieczny launcher dla `pi-many-agents dashboard`, ktory na macOS otwiera nowe okno Terminal.app i uruchamia `dashboard --inline` w tym samym cwd. Okresl argv, osascript contract, POSIX escaping, fallback non-darwin i testy bez prawdziwego GUI. Nie implementuj jeszcze kodu.",
+      "type": "research",
+      "priority": 2,
+      "dependencies": [],
+      "relevantFiles": [
+        "src/cli/main.ts",
+        "bin/pi-many-agents.js",
+        "plans/stage-5-terminal-dashboard-admin.prompt.json"
+      ],
+      "constraints": [
+        "Nie uzywaj shell:true.",
+        "Sciezki moga zawierac spacje, apostrofy i znaki specjalne.",
+        "--inline nigdy nie moze uruchamiac osascript.",
+        "Brak rekurencyjnego otwierania nowych okien."
+      ],
+      "expectedOutput": "Bezpieczny kontrakt launchera, funkcja escaping, przypadki testowe i zachowanie fallbacku.",
+      "modelPolicy": {
+        "reasoning": "medium",
+        "timeoutMs": 120000
+      },
+      "permissions": {
+        "read": true,
+        "write": false,
+        "shell": false,
+        "network": false,
+        "git": false
+      }
+    },
+    {
+      "id": "dashboard-implement",
+      "title": "Implement terminal dashboard and admin panel",
+      "objective": "Na podstawie pelnej specyfikacji w `plans/stage-5-terminal-dashboard-admin.prompt.json` oraz raportow z dashboard-audit, dashboard-tui-design i dashboard-macos-design zaimplementuj Stage 5 end-to-end. Dodaj IPC snapshot/details/providers, task state DTO, dashboard client/state/render/input/app, bezpieczny macOS launcher, CLI dashboard/--inline/--new-window, panel admin do uruchamiania planu i abort selected/abort all z potwierdzeniem, testy unit/E2E oraz README i ADR. W tym samym zadaniu uruchom npm test, npm run typecheck, npm run lint i npm run demo. Nie koncz na planie. Zaimplementuj kod.",
+      "type": "code",
+      "priority": 4,
+      "dependencies": [
+        "dashboard-audit",
+        "dashboard-tui-design",
+        "dashboard-macos-design"
+      ],
+      "relevantFiles": [
+        "plans/stage-5-terminal-dashboard-admin.prompt.json",
+        "src/daemon/server.ts",
+        "src/daemon/store.ts",
+        "src/protocol/ipc.ts",
+        "src/cli/main.ts",
+        "src/types.ts",
+        "src/dashboard",
+        "bin/pi-many-agents.js",
+        "test",
+        "README.md",
+        "docs/architecture.md",
+        "docs/roadmap.md",
+        "docs/decisions"
+      ],
+      "writeScope": [
+        "src/daemon",
+        "src/protocol",
+        "src/dashboard",
+        "src/cli/main.ts",
+        "src/types.ts",
+        "bin/pi-many-agents.js",
+        "test",
+        "README.md",
+        "docs"
+      ],
+      "constraints": [
+        "Nie modyfikuj Pi core.",
+        "Nie buduj web UI ani Electron.",
+        "Dashboard komunikuje sie z daemonem przez IPC.",
+        "Nie uzywaj shell:true ani niesanitowanych command strings.",
+        "Nie zatrzymuj daemona przy wyjsciu z Dashboardu.",
+        "Abort selected dotyczy tylko wybranego runId.",
+        "Abort all wymaga mocnego potwierdzenia.",
+        "Nie cofaj Stage 4 ani cudzych zmian.",
+        "Testy nie moga wymagac GUI ani lokalnych modeli.",
+        "Jesli manualny test Terminal.app nie jest mozliwy, raportuj NOT VERIFIED zamiast udawac sukces."
+      ],
+      "expectedOutput": "Gotowa implementacja Stage 5 w worktree, pelny AgentReport z lista zmian, wynikami testow, komendami uzycia Dashboardu i ewentualnymi ograniczeniami.",
+      "modelPolicy": {
+        "reasoning": "high",
+        "timeoutMs": 900000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    }
+  ]
 }
