@@ -76,7 +76,8 @@ export class Orchestrator {
     const launch = (task: AgentTask): void => {
       const plan = routeTask(task, this.config);
       const providerName = options.provider ?? plan.provider;
-      const job = (async () => {
+      let job!: Promise<void>;
+      job = (async () => {
         let lockAcquired = false;
         try {
           if (task.permissions.write) {

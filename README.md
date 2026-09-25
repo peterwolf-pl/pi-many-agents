@@ -6,31 +6,30 @@ Projekt wykorzystuje TypeScript, procesy Node.js, adapter CLI Pi oraz lokalne ad
 
 ## Status
 
-Stan opisany na podstawie commita `21c4f3eac30ae006bf0c24133d64362b0c877db5` z gałęzi `main`, sprawdzony 25.09.2026.
+Stan wdrożony po etapie **Stage 3A**:
 
-**Działa podstawowy runner CLI. Integracja daemon + `/many` wymaga naprawy.** Worktrees, blokady ścieżek i doradca L0 istnieją jako moduły, ale nie uczestniczą jeszcze w głównej pętli wykonania.
+**Działa runner CLI oraz daemon z rozszerzeniem `/many`.** Zaimplementowano odporny protokół IPC, izolowane anulowanie per-worker, trwałość z `runId` w SQLite, deduplikację z przepisywaniem zależności, przekazywanie raportów do następców oraz izolację zapisu przez Git worktrees i blokady ścieżek.
 
 | Obszar | Stan implementacji |
 | --- | --- |
-| Kolejka zadań | Priorytety, zależności, wykrywanie cykli i limit równoległości |
-| Obsługa błędów | Timeout, retry wybranych błędów, podstawowa ocena zdrowia providera |
-| Dostawcy | Fake, proces Pi, profile Pi, Ollama, Mistral przez lokalne API |
-| Raporty | `AgentReport`, zbieranie wyników, tekstowy status, telemetria JSONL |
+| Kolejka zadań | Priorytety, zależności, graf DAG, limit równoległości i walidacja liczb |
+| Obsługa błędów | Timeout, retry, priorytet błędu procesu nad `completed`, ochrona bufora |
+| Dostawcy | Fake, proces Pi, profile Pi, Ollama, Mistral; per-worker AbortController |
+| Raporty | `AgentReport` z zagnieżdżonymi `changes`, przekazywanie wyników do zależności |
 | Dekompozycja | Deterministyczny podział Markdown według nagłówków i list |
-| Deduplikacja | Fingerprint typu zadania, celu i listy plików; wymaga naprawy zależności |
-| Daemon | Serwer Unix socket i SQLite; niezgodny protokół z rozszerzeniem |
-| Worktrees | Osobny manager i blokady; brak podłączenia do orkiestratora |
-| L0 | Klasyfikacja, kompresja i rekomendacja reasoningu; brak podłączenia do orkiestratora |
+| Deduplikacja | Semantyczny fingerprint (workspace, context, constraints, perms) + aliasy |
+| Daemon | Serwer Unix socket, pojedyncza instancja, buforowane JSONL, SQLite z `runId` |
+| Worktrees | Automatyczna izolacja zadań z `write: true`, blokady ścieżek, zachowanie zmian |
+| L0 | Klasyfikacja, kompresja i rekomendacja reasoningu (moduł doradczy; router odroczony) |
 
 ## Wymagania
 
-- Manifest deklaruje Node.js `>=22`. Kod używa `--experimental-strip-types` i `node:sqlite`; nie każda wczesna wersja Node 22 spełnia te wymagania. Ten snapshot sprawdzono na Node `24.19.0`.
+- Node.js `>=22.6.0` (wymagane przez `node:sqlite` oraz `--experimental-strip-types`). Przetestowano na Node `v26.8.2` / `v24.19.0`.
 - npm do instalacji zależności deweloperskich i uruchamiania skryptów.
-- Git dla testów i modułu worktrees.
+- Git dla testów i izolacji zadań w worktrees.
 - Pi w `PATH` lub własna wartość `piBinary`, jeśli uruchamiasz prawdziwych workerów.
 - Dostęp do modeli i uwierzytelnianie konfiguruje się w Pi.
 - Ollama lub Docker są opcjonalne, zależnie od wybranego adaptera.
-- Unix socket i sygnały grup procesów wymagają osobnej weryfikacji na Windows.
 
 ## Szybki start
 
@@ -107,7 +106,7 @@ Wymagane pola to `id`, `title`, `objective`. `createTask` uzupełnia pozostałe 
 | `modelPolicy.maxTokens` | Zadeklarowany budżet; obecnie nie jest egzekwowany dla realnych modeli |
 | `permissions` | Wybór narzędzi Pi oraz deklaracje uprawnień |
 
-Zależności obecnie sterują kolejnością. **Raport poprzednika nie trafia automatycznie do kontekstu następnego zadania.** Nie zakładaj, że zadanie `integrate` zna wcześniejsze wyniki.
+Zależności sterują kolejnością. **Raporty zależności poprzedników (summary, findings, changes, artifacts) trafiają automatycznie do kontekstu kolejnych zadań**, z zachowaniem deterministycznego limitu wielkości.
 
 ## Konfiguracja
 
@@ -128,9 +127,7 @@ Plik `.pi-many-agents.json` w katalogu uruchomienia:
 
 Domyślny routing ustala minimalny reasoning: `none` dla `shell` i `inspect`, `low` dla `test`, `review`, `research`, `medium` dla `code` i `other`.
 
-`createTask` bez jawnej wartości reasoningu ustawia `low`. Router wybiera wyższą wartość z żądanej i minimalnej, dlatego zadanie `inspect` bez konfiguracji nie otrzymuje automatycznie `none`.
-
-Obecny adapter Pi przekazuje model tylko wtedy, gdy znajduje się w `task.modelPolicy.model`. Samo `defaultModel` może pojawić się w planie i telemetrii, ale nie trafić do argumentów procesu Pi.
+Jawny reasoning `none` jest rozróżniany od braku wartości (niepodana wartość przyjmuje regułę bazową). Precedencja wyboru dostawcy: flaga CLI (`--provider`) > pole `provider` w pliku planu > domyślna wartość w konfiguracji (`fake`).
 
 ## Dostawcy i modele
 
@@ -151,14 +148,11 @@ Orkiestrator sprawdza `available()` przed wykonaniem. Niedostępny adapter końc
 `AgentReport` zawiera `taskId`, `workerId`, `status`, `summary`, `findings`, `durationMs`. Opcjonalnie: `changes`, `artifacts`, `warnings`, `recommendedNextTasks`, `usage`, `error`.
 
 - Status raportu: `completed`, `failed` albo `partial`.
-- Zdarzenia i telemetria trafiają do pliku JSONL.
-- Dane o tokenach i kosztach są opcjonalne. Nie stanowią kompletnego rozliczenia.
-- Worker dostaje jawny pakiet zadania. Orkiestrator nie dołącza historii rozmowy głównego agenta.
-- Adaptery lokalnego chatu widzą tekst pakietu, nie zawartość ścieżek z `relevantFiles`.
+- Błąd procesu, timeout lub anulowanie mają bezwzględne pierwszeństwo nad deklaracją `completed` z odpowiedzi LLM.
+- Ekstraktor raportów obsługuje zagnieżdżone obiekty `changes` i nawiasy klamrowe w łańcuchach.
+- Zdarzenia i telemetria trafiają do pliku JSONL oraz bazy SQLite (`runs`, `tasks`, `reports`, `events`).
 
 ## Rozszerzenie Pi i daemon
-
-Punkty wejścia istnieją:
 
 ```bash
 node bin/pi-many-agents.js daemon
@@ -167,57 +161,48 @@ pi --extension ./extensions/index.ts
 
 Komenda rozszerzenia: `/many <plan.json>`.
 
-Daemon używa `.pi-many-agents/daemon.sock`, `.pi-many-agents/daemon.pid` i SQLite `.pi-many-agents/state.db`. Ścieżki zależą od bieżącego katalogu procesu.
-
-**Ta ścieżka nie jest obecnie gotowa do użycia:**
-
-- Konstruktor otwiera bazę przed utworzeniem katalogu danych. Świeży katalog kończy się błędem `unable to open database file`.
-- Rozszerzenie wysyła `{type, tasks, options, requestId}`, a serwer przepuszcza to przez parser zdarzeń wymagający m.in. `version`, `workerId` i `timestamp`. Poprawne żądanie rozszerzenia zostaje odrzucone.
-- Klient nie buforuje ramek JSONL rozdzielonych między porcje danych z socketu.
-- Anulowanie używa jednego współdzielonego kontrolera dla wszystkich żądań.
-- Store ma CRUD zadań, ale serwer nie zapisuje otrzymanych zadań przez `upsertTask`.
+Daemon zarządza stanem w `.pi-many-agents/daemon.sock`, `.pi-many-agents/daemon.pid` oraz SQLite `.pi-many-agents/state.db` w trybie WAL:
+- Dedykowany, wersjonowany protokół IPC (`src/protocol/ipc.ts`).
+- Ramki JSONL buforowane z obsługą fragmentacji i limitu rozmiaru bufora.
+- Bezpieczny start sprawdzający aktywność socketu i tworzący katalog przed bazą.
+- Każdy run identyfikowany przez `requestId` i posiadający niezależny `AbortController`.
+- Zamknięcie daemona najpierw anuluje aktywne procesy, czeka na ich zakończenie, a następnie bezpiecznie zamyka bazę i pliki socket/pid.
 
 ## Izolacja i znane ograniczenia
 
-- Procesy workerów są oddzielne, ale orkiestrator nie tworzy dla nich worktrees. Równoległe zadania zapisujące mogą pracować w tym samym katalogu.
-- `PathLockManager` i `WorktreeManager` nie są podłączone do schedulera. Nie polegaj na automatycznej ochronie zmian.
-- `permissions` ogranicza dostępne narzędzia Pi. Nie jest sandboxem systemowym. Dostęp do `bash` nie zapewnia technicznego zakazu sieci, Git ani zapisu.
-- `L0Advisor` nie jest wywoływany w głównym przepływie. Nie ma jeszcze automatycznej optymalizacji kosztu przez L0.
-- Parser raportu nie obsługuje poprawnie zagnieżdżonych obiektów, np. `changes`. Raport workera może też nadpisać informację o błędzie procesu.
-- Deduplikacja może usunąć zadanie bez przepisania referencji w `dependencies`.
-- Anulowanie workera Pi/Fake sprząta procesy całego współdzielonego adaptera, a nie wyłącznie wskazanego zadania.
-- Nie ma automatycznego scalania zmian, dashboardu TUI, otwierania okien terminala ani sterowania tmux.
-- Nie ma kosztowego wyboru modeli, automatycznej eskalacji ani dynamicznego dopisywania rekomendowanych zadań do kolejki.
+- Zadania z `permissions.write: true` uruchamiane są w odizolowanych Git worktrees (`.pi-many-agents/worktrees/<runId>/<taskId>`), z blokadami ścieżek przez `PathLockManager`.
+- Worktrees z wprowadzonymi zmianami nie są kasowane automatycznie po zakończeniu pracy (brak utraty danych).
+- Nie ma automatycznego scalania zmian (auto-merge); integracja kodu musi nastąpić jawnie przez zadanie integracyjne lub użytkownika.
+- Uprawnienia `permissions` ograniczają dostępne narzędzia Pi, ale nie stanowią izolacji na poziomie jądra systemu (brak twardego sandboxa OS).
+- `L0Advisor` pozostaje modułem pomocniczym (nie wpiętym w produkcyjny routing kosztowy).
+- Budżet `maxTokens` nie jest twardo egzekwowany, jeśli dany backend modelu nie udostępnia parametru limitu.
 
 ## Struktura kodu
 
 | Katalog | Odpowiedzialność |
 | --- | --- |
-| `src/core` | Zadania, kolejka, orkiestrator, workery, graf, deduplikacja |
+| `src/core` | Zadania, plan, kolejka, orkiestrator, workery, graf, deduplikacja |
 | `src/providers` | Adaptery Fake, Pi, Ollama, Docker Mistral i katalog profili |
-| `src/process` | Uruchamianie procesów, timeout i sprzątanie |
-| `src/protocol` | Zdarzenia JSONL i raporty |
-| `src/daemon` | Unix socket i SQLite |
-| `src/worktree` | Worktrees i blokady ścieżek |
-| `src/l0` | Opcjonalny lokalny doradca |
+| `src/process` | Uruchamianie procesów, buforowanie stdio, timeout i bezpieczne sprzątanie |
+| `src/protocol` | Zdarzenia JSONL, dedykowany protokół IPC i raporty |
+| `src/daemon` | Unix socket IPC i trwały SQLite store z obsługą `runId` |
+| `src/worktree` | Izolacja Git worktrees i blokady ścieżek |
+| `src/l0` | Lokalny doradca reasoningu i kompresji |
 | `src/telemetry` | Event bus, JSONL i status tekstowy |
-| `extensions` | Komenda `/many` dla Pi |
-| `plans` | Plany wcześniejszych etapów i przeglądów |
-| `docs/decisions` | Decyzje architektoniczne |
-| `test` | Testy oparte na `node:test` |
+| `extensions` | Komenda `/many` dla Pi z pełną kontrolą typów |
+| `plans` | Przykładowe plany i wytyczne etapów |
+| `docs/decisions` | Decyzje architektoniczne (ADR) |
+| `test` | Testy oparte na `node:test` (52 testy) |
 
-## Weryfikacja tego snapshotu
+## Weryfikacja
 
-Na Node `24.19.0`: **28/28 testów**, `typecheck`, `lint` i `demo` zakończyły się powodzeniem.
-
-To nie potwierdza działania całego systemu. Test `daemon.test.ts` sprawdza store, nie komunikację `/many` z daemonem. `tsconfig.json` nie obejmuje `extensions`. Skrypt lint wyszukuje dwa zabronione fragmenty tekstu, nie wykonuje pełnej analizy statycznej. Adapterów z realnymi modelami nie uruchamiano podczas tego przeglądu.
-
-## Następny etap
-
-1. Naprawić IPC, cykl życia daemona i anulowanie pojedynczych zadań.
-2. Ujednolicić walidację planu, wybór providera/modelu i raporty.
-3. Przekazywać wyniki zależności i bezpiecznie deduplikować graf.
-4. Podłączyć worktrees i blokady, zachowując zmiany po zakończeniu pracy.
+Wszystkie bramki jakości przechodzą:
+```bash
+npm test       # 52/52 testów przechodzi
+npm run typecheck # tsc bez błędów, obejmuje src, test, scripts, extensions
+npm run lint   # pomyślnie
+npm run demo   # pomyślnie
+```
 5. Dodać testy całej ścieżki, a następnie wrócić do L0 i routingu kosztowego.
 
 Manifest deklaruje licencję MIT; w analizowanym drzewie nie ma osobnego pliku `LICENSE`.

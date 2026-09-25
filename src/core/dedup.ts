@@ -1,5 +1,5 @@
 import type { AgentTask } from "../types.ts";
-import { assertAcyclic } from "./task.ts";
+import { assertAcyclic, TaskValidationError } from "./task.ts";
 
 export function taskFingerprint(task: AgentTask): string {
   const files = [...(task.relevantFiles ?? [])].sort().join(",");

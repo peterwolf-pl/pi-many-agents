@@ -33,10 +33,11 @@
     "lint": "node --experimental-strip-types scripts/lint.ts"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.6.0"
   },
   "license": "MIT",
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
     "@types/node": "^24.13.6",
     "typescript": "^5.8.3"
   }

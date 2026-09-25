@@ -97,7 +97,7 @@ export class WorktreeManager {
 
     const info: WorktreeInfo = {
       taskId,
-      runId,
+      runId: safeRunId || "default",
       branch,
       baseCommit,
       relPath: rel,

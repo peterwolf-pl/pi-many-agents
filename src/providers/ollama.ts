@@ -102,7 +102,7 @@ export class OllamaProvider implements AgentProvider {
         handle: worker,
       };
     } catch (err) {
-      const isCancelled = workerAc.signal.aborted || this.signal?.aborted;
+      const isCancelled = Boolean(workerAc.signal.aborted || this.signal?.aborted);
       return {
         report: wrapTextReport({
           taskId: task.id,

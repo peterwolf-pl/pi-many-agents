@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "rootDir": "."
   },
-  "include": ["src", "test", "scripts"]
+  "include": ["src", "test", "scripts", "extensions"]
 }
