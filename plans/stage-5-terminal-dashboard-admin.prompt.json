@@ -1,0 +1,337 @@
+{
+  "prompt_version": "1.0",
+  "project": "pi-many-agents",
+  "stage": "5 - terminal dashboard + admin panel",
+  "language": "pl",
+  "baseline_commit": "814f58ae836f53642f8ce2d505fe640d77f83d61",
+  "document_kind": "Instrukcja JSON dla glownego agenta programujacego. Stage ma byc wdrazany z pomoca pi-many-agents. Nie jest bezposrednim planem do run --plan ani /many.",
+  "role": "Jestes glownym agentem rozwijajacym pi-many-agents. Zbuduj lokalny terminalowy Dashboard z panelem admin, ktory dziala jako osobny proces i laczy sie z istniejacym daemonem. Dashboard ma byc uruchamiany z CLI w nowym oknie Terminal.app na macOS. Zachowaj architekture zewnetrznego orkiestratora i nie modyfikuj rdzenia Pi.",
+  "objective": "Dodaj czytelny, szybki TUI do obserwacji i kontrolowania pi-many-agents: stan daemona, runy, taski/workery, providery, reasoning, modele, kolejke, postep, usage, bledy i event log. Panel admin ma pozwalac bezpiecznie uruchomic plan, anulowac wybrany run, odswiezyc dane i podejrzec szczegoly. Domyslna komenda dashboard na macOS otwiera nowa karte/okno Terminal.app z TUI; tryb --inline uruchamia go w biezacym terminalu i sluzy do testow oraz innych systemow.",
+  "product_shape": {
+    "default_command": "pi-many-agents dashboard",
+    "inline_command": "pi-many-agents dashboard --inline",
+    "direct_module_example": "node bin/pi-many-agents.js dashboard --inline",
+    "macos_behavior": "Bez flagi --inline CLI uruchamia osobny proces Dashboardu w nowym oknie Terminal.app i natychmiast zwraca kontrole do terminala nadrzednego.",
+    "non_macos_behavior": "Nie udawaj Terminal.app. Domyslnie uruchom dashboard inline albo pokaz jednoznaczna informacje o fallbacku.",
+    "ui_mode": "Terminal TUI. Nie buduj strony WWW, Electrona ani serwera HTTP w tym stage."
+  },
+  "baseline_state": {
+    "daemon": "Istnieje Unix socket, wersjonowany JSONL IPC, run/status/abort, broadcast eventow i SQLite store.",
+    "store": "Store ma runs, tasks, reports, events oraz getStatus/listRuns/listTasks/listReports/listEvents, ale aktualny IPC udostepnia tylko zbiorczy status i live events.",
+    "cli": "CLI ma run, decompose, graph, demo i daemon. Nie ma dashboardu.",
+    "important_gap": "Dashboard nie powinien czytac SQLite bezposrednio, gdy daemon dziala. Daemon ma pozostac wlascicielem stanu i wystawic potrzebne read-only snapshoty przez IPC."
+  },
+  "hard_rules": [
+    "Dashboard jest klientem daemona, nie drugim orchestrator-em.",
+    "Nie odczytuj aktywnej bazy SQLite bezposrednio z procesu Dashboardu jako glownego mechanizmu.",
+    "Nie kopiuj logiki schedulera ani providerow do TUI.",
+    "Nie uzywaj LLM do renderowania, sortowania, filtrowania, odswiezania ani obslugi klawiszy.",
+    "Nie dodawaj serwera WWW, przegladarki ani Electron.",
+    "Nie dodawaj platnych API.",
+    "Nie uruchamiaj polecen przez shell:true z niesanitowanymi danymi.",
+    "Launcher macOS musi poprawnie escapowac cwd i argumenty. Sciezka repo moze zawierac spacje lub znaki specjalne.",
+    "Anulowanie dotyczy jawnie wybranego runId. Akcja abort-all wymaga osobnego potwierdzenia.",
+    "Dashboard nie moze zabijac procesow przez process.kill(0, ...), pkill ani niezweryfikowany PID.",
+    "Zamkniecie Dashboardu nie zatrzymuje daemona ani aktywnych runow.",
+    "Nie modyfikuj Pi core."
+  ],
+  "startup": [
+    "Przeczytaj AGENTS.md, jesli istnieje, README.md, INIT_short.md, src/daemon/server.ts, src/daemon/store.ts, src/protocol/ipc.ts, src/cli/main.ts, src/types.ts i testy IPC/daemon.",
+    "Porownaj HEAD z baseline_commit. Main mogl sie zmienic przez Stage 4 lub inne commity. Nie cofaj ani nie duplikuj nowszych zmian.",
+    "Uruchom npm test, npm run typecheck, npm run lint i npm run demo przed zmianami. Zapisz baseline.",
+    "Zweryfikuj na macOS, czy /usr/bin/osascript oraz Terminal.app sa dostepne. Brak dostepu do GUI nie moze blokowac unit tests.",
+    "Zachowaj cudze zmiany i wszystkie istniejace worktrees."
+  ],
+  "architecture": {
+    "modules": [
+      "src/dashboard/client.ts - klient IPC z reconnect i snapshot/live events",
+      "src/dashboard/state.ts - czysty reducer/model widoku, bez terminal I/O",
+      "src/dashboard/render.ts - deterministyczne renderowanie TUI z szerokoscia terminala",
+      "src/dashboard/input.ts - klawisze, selekcja i modal potwierdzen",
+      "src/dashboard/app.ts - lifecycle TUI, refresh/reconnect/cleanup",
+      "src/dashboard/launcher.ts - macOS Terminal.app oraz inline fallback",
+      "src/protocol/ipc.ts - rozszerzony kontrakt read-only dashboardu",
+      "src/daemon/server.ts - obsluga nowych komend snapshot/details/providers bez przenoszenia logiki do UI"
+    ],
+    "dependency_rule": "state i render musza byc testowalne bez TTY, daemona i macOS GUI.",
+    "data_flow": "daemon/store -> IPC snapshot + live events -> dashboard client -> reducer -> renderer -> terminal. Admin action -> IPC command -> daemon -> orchestrator/store -> event -> reducer."
+  },
+  "many_agents_execution": {
+    "max_initial_parallel_workers": 3,
+    "workers": [
+      {
+        "id": "dashboard-ipc-worker",
+        "scope": [
+          "src/protocol/ipc.ts",
+          "src/daemon/server.ts",
+          "src/daemon/store.ts",
+          "test"
+        ],
+        "task": "Rozszerz IPC o bezpieczne snapshoty i szczegoly dla Dashboardu, z testami protokolu i store.",
+        "reasoning": "medium"
+      },
+      {
+        "id": "dashboard-tui-worker",
+        "scope": [
+          "src/dashboard/state.ts",
+          "src/dashboard/render.ts",
+          "src/dashboard/input.ts",
+          "src/dashboard/app.ts",
+          "test/dashboard*.test.ts"
+        ],
+        "task": "Zbuduj model stanu, renderer i sterowanie TUI niezalezne od launchera macOS.",
+        "reasoning": "medium"
+      },
+      {
+        "id": "dashboard-launcher-worker",
+        "scope": [
+          "src/dashboard/launcher.ts",
+          "src/cli/main.ts",
+          "bin/pi-many-agents.js",
+          "test/dashboard-launcher.test.ts"
+        ],
+        "task": "Dodaj dashboard CLI, tryb --inline i bezpieczne otwieranie nowego okna Terminal.app na macOS.",
+        "reasoning": "medium"
+      }
+    ],
+    "integration": {
+      "owner": "glowny agent",
+      "reasoning": "high",
+      "rule": "Workery moga implementowac niezalezne pakiety w osobnych worktrees. Glowny agent integruje jawnie, rozwiazuje kontrakt IPC/TUI, uruchamia pelne testy i aktualizuje dokumentacje. Brak auto-merge."
+    }
+  },
+  "work_packages": [
+    {
+      "id": "P1",
+      "title": "Dashboard IPC snapshot i szczegoly",
+      "depends_on": [],
+      "files": [
+        "src/protocol/ipc.ts",
+        "src/daemon/server.ts",
+        "src/daemon/store.ts"
+      ],
+      "requirements": [
+        "Rozszerz wersjonowany IPC o read-only komendy potrzebne Dashboardowi. Preferowany minimalny zestaw: dashboard.snapshot, run.details i providers.status. Nazwy moga byc inne, ale musza miec jawne typy i walidacje.",
+        "Snapshot zwraca stan daemona, PID jesli bezpiecznie dostepny, aktywne runy, ostatnie runy, task counts oraz skrocone taski dla aktywnych runow.",
+        "Run details zwraca run, taski z ich stanami, raporty i ograniczona liczbe ostatnich eventow.",
+        "Store obecnie listTasks zwraca tylko AgentTask bez stanu. Dodaj jawny DTO/record do odczytu stanu zamiast probowac odtwarzac state w Dashboardzie z samych eventow.",
+        "Provider status nie moze wykonywac modeli ani pobierac danych z chmury. Ma raportowac registered/reachable/available/model tylko na podstawie istniejacych adapterow i ich bezpiecznej detekcji.",
+        "Kazda odpowiedz musi byc ograniczona objetosciowo. Nie wysylaj calej historii eventow przy kazdym refresh.",
+        "Zachowaj kompatybilnosc run/status/abort i obecnych klientow."
+      ],
+      "acceptance": [
+        "Dashboard moze z jednego snapshotu narysowac ekran bez bezposredniego SQLite.",
+        "Stan queued/running/completed/failed/cancelled jest dostepny dla taskow.",
+        "Stary klient /many nadal dziala.",
+        "Niepoprawna komenda lub runId daje jawny IPC error."
+      ]
+    },
+    {
+      "id": "P2",
+      "title": "Model stanu Dashboardu i live updates",
+      "depends_on": [
+        "P1"
+      ],
+      "files": [
+        "src/dashboard/client.ts",
+        "src/dashboard/state.ts"
+      ],
+      "requirements": [
+        "Zbuduj klienta IPC z JsonLineDecoder, handshake, requestId, timeoutem, reconnect z ograniczonym backoffem i poprawnym cleanupem.",
+        "Po polaczeniu pobierz snapshot. Potem aktualizuj state przez broadcast eventow. Okresowy snapshot co kilka sekund ma naprawiac ewentualne rozjazdy.",
+        "Reducer ma byc czysta funkcja. Nie przechowuj Socket, timerow ani kodu ANSI w state.",
+        "Stan UI obejmuje daemon online/offline, runs, selectedRunId, tasks, providers, recentEvents, lastError, lastRefresh i admin modal.",
+        "Po reconnect nie duplikuj eventow i nie zeruj selekcji, jesli wybrany run nadal istnieje.",
+        "Gdy daemon jest offline, Dashboard pozostaje otwarty i pokazuje OFFLINE zamiast wychodzic z bledem."
+      ],
+      "acceptance": [
+        "Disconnect/reconnect nie crashuje TUI.",
+        "Live event zmienia task na running/completed bez pelnego restartu aplikacji.",
+        "Snapshot po reconnect przywraca zgodny stan.",
+        "Reducer ma unit tests bez socketu."
+      ]
+    },
+    {
+      "id": "P3",
+      "title": "Terminal TUI",
+      "depends_on": [
+        "P2"
+      ],
+      "files": [
+        "src/dashboard/render.ts",
+        "src/dashboard/input.ts",
+        "src/dashboard/app.ts"
+      ],
+      "requirements": [
+        "Zbuduj pelnoekranowy TUI z ANSI i Node standard library albo bardzo lekka zaleznoscia tylko jesli daje realna korzysc. Preferuj brak nowej runtime dependency.",
+        "Ekran glowny ma miec: naglowek pi-many-agents Dashboard, status daemona, uptime/PID jesli dostepne, liczbe aktywnych runow i taskow, oraz czas ostatniego refresh.",
+        "Sekcja RUNS: runId, state, czas startu, elapsed, liczba taskow completed/running/failed/queued.",
+        "Sekcja TASKS/WORKERS dla zaznaczonego runu: taskId, title skrocony do szerokosci, state, provider, model, reasoning, duration, retry/attempt jesli dane istnieja.",
+        "Sekcja PROVIDERS: nazwa, model, status available/unavailable/unknown. Nie wykonuj inference na potrzeby widoku.",
+        "Sekcja EVENTS/LOG: ostatnie zdarzenia z timestamp, taskId i krotkim komunikatem. Ogranicz ilosc w pamieci.",
+        "Pasek pomocy ma pokazywac klawisze. Minimalne sterowanie: gora/dol wybor runu, Enter szczegoly, r refresh, n new run, a abort selected, x abort all z potwierdzeniem, p providers, l logs/details, q quit.",
+        "Render dopasowuje sie do process.stdout.columns/rows. Przy malym terminalu ukrywa mniej wazne kolumny zamiast wypisywac poza ekran.",
+        "Uzywaj jednego render passu i ogranicz odswiezanie, aby uniknac migotania i wysokiego CPU.",
+        "Po wyjsciu zawsze przywroc cursor, raw mode i ekran terminala nawet po wyjatku/SIGINT."
+      ],
+      "acceptance": [
+        "Renderer daje deterministyczny output dla fixture 80x24 i 140x40.",
+        "Brak pozostawionego raw mode po q, SIGINT lub bledzie.",
+        "Dashboard nie zuzywa petli CPU przy braku eventow.",
+        "Tekst z task title lub error nie moze wstrzykiwac sekwencji sterujacych ANSI. Sanitizuj znaki kontrolne."
+      ]
+    },
+    {
+      "id": "P4",
+      "title": "Panel admin i uruchamianie planow",
+      "depends_on": [
+        "P1",
+        "P2",
+        "P3"
+      ],
+      "requirements": [
+        "Akcja n prosi o sciezke do planu JSON. Parsowanie i walidacja musza uzyc tego samego parsePlan/validateRunOptions co CLI.",
+        "Panel moze opcjonalnie zapytac o provider override i concurrency. Puste pole oznacza wartosc z planu/config.",
+        "Nowy run wysylaj do daemona przez IPC run. Nie uruchamiaj drugiego orchestratora bezposrednio z Dashboardu.",
+        "Akcja a anuluje tylko selectedRunId i wymaga potwierdzenia y/n.",
+        "Akcja x abort all jest wyraznie oznaczona jako destrukcyjna i wymaga osobnego potwierdzenia tekstem lub dwustopniowego potwierdzenia.",
+        "Nie dodawaj edit-config, delete-history, kill-process ani merge-worktree w tym stage.",
+        "Wynik admin action ma byc widoczny jako status/error w TUI, nie tylko na stderr."
+      ],
+      "acceptance": [
+        "Z TUI mozna uruchomic poprawny plan przez daemon.",
+        "Niepoprawny plan jest odrzucony przed wyslaniem run.",
+        "Abort selected nie dotyka innych runow.",
+        "Escape/anulowanie modala nie wykonuje akcji."
+      ]
+    },
+    {
+      "id": "P5",
+      "title": "Nowe okno Terminal.app na macOS",
+      "depends_on": [
+        "P3"
+      ],
+      "files": [
+        "src/dashboard/launcher.ts",
+        "src/cli/main.ts",
+        "bin/pi-many-agents.js"
+      ],
+      "requirements": [
+        "Dodaj komende dashboard do help CLI.",
+        "pi-many-agents dashboard na darwin ma uruchomic nowy proces z dashboard --inline w nowym oknie Terminal.app przez /usr/bin/osascript albo rownowazny systemowy mechanizm.",
+        "Nie uzywaj shell:true do zlozenia calej komendy. Jesli AppleScript wykonuje command string w shellu, zastosuj jedna audytowalna funkcje POSIX shell escaping dla cwd, node executable, entrypoint i argumentow.",
+        "Nowe okno ma startowac w tym samym workspace/cwd co polecenie wywolujace.",
+        "Launcher nie moze otwierac rekurencyjnie kolejnych okien. --inline zawsze uruchamia TUI bez launchera.",
+        "Dodaj flage --new-window jawnie wymuszajaca launcher i --inline jawnie go omijajaca.",
+        "Na non-darwin dashboard bez flag ma bezpieczny inline fallback. Nie probuj osascript.",
+        "Jesli osascript/Terminal.app zwroci blad, wypisz czytelny komunikat i zaproponuj automatyczny inline fallback tylko jesli nie spowoduje duplikatu procesu."
+      ],
+      "acceptance": [
+        "Unit test stubuje spawn i potwierdza brak shell:true.",
+        "Sciezka z apostrofem i spacjami jest poprawnie escapowana.",
+        "dashboard --inline nigdy nie odpala osascript.",
+        "Launcher rodzic nie pozostaje wiszacym TUI po poprawnym otwarciu nowego okna."
+      ]
+    },
+    {
+      "id": "P6",
+      "title": "Testy end-to-end Dashboardu",
+      "depends_on": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5"
+      ],
+      "requirements": [
+        "Dodaj test daemon + dashboard client na tymczasowym Unix socket i DB, bez dotykania .pi-many-agents uzytkownika.",
+        "Uruchom fake plan przez panel/IPC i potwierdz kolejnosc: queued -> running -> terminal state oraz widocznosc raportu.",
+        "Przetestuj reconnect po restarcie testowego daemona.",
+        "Przetestuj abort selected i zachowanie drugiego runu.",
+        "Przetestuj snapshot z pustym store oraz z historia wielu runow.",
+        "Testy renderera nie wymagaja TTY. Testy launchera nie otwieraja prawdziwego Terminal.app w CI.",
+        "Realny manual smoke test macOS moze otworzyc Terminal.app dopiero po przejsciu unit tests i tylko jesli srodowisko ma GUI."
+      ],
+      "acceptance": [
+        "npm test przechodzi bez GUI.",
+        "Dashboard client i daemon maja test calej sciezki IPC.",
+        "Manualny smoke test macOS jest raportowany jako VERIFIED albo NOT VERIFIED, nigdy udawany."
+      ]
+    },
+    {
+      "id": "P7",
+      "title": "Dokumentacja i bramka jakosci",
+      "depends_on": [
+        "P6"
+      ],
+      "files": [
+        "README.md",
+        "docs/architecture.md",
+        "docs/roadmap.md",
+        "docs/decisions",
+        "package.json",
+        "tsconfig.json"
+      ],
+      "requirements": [
+        "Dodaj sekcje Dashboard do README z dashboard, dashboard --inline i podstawowymi klawiszami.",
+        "Opisz, ze Dashboard jest lokalnym klientem daemona, a zamkniecie TUI nie zatrzymuje runow.",
+        "Dodaj ADR dla terminal dashboard + daemon IPC + macOS launcher.",
+        "Jesli Stage 4 zostal juz wdrozony, pokaz qwen4 i mistral w providers view zgodnie z aktualnym kodem. Jesli Stage 4 nadal jest tylko promptem, nie udawaj jego implementacji.",
+        "Nie wpisuj stalej liczby testow przed finalnym uruchomieniem bramki.",
+        "Uruchom npm test, npm run typecheck, npm run lint i npm run demo po integracji."
+      ],
+      "acceptance": [
+        "README odpowiada faktycznym komendom.",
+        "Typecheck obejmuje nowe pliki dashboard.",
+        "Nie ma sekretow, plikow DB, socketow ani artefaktow runtime w commicie.",
+        "Git status po testach zawiera tylko zamierzone zmiany."
+      ]
+    }
+  ],
+  "visual_spec": {
+    "header": "PI MANY AGENTS  |  DAEMON ONLINE/OFFLINE  |  active runs N  |  tasks running N  |  refreshed HH:MM:SS",
+    "panels": [
+      "RUNS - lista runow z selekcja",
+      "TASKS / WORKERS - szczegoly wybranego runu",
+      "PROVIDERS - dostepnosc modeli/providerow",
+      "EVENTS - ostatnie zdarzenia i bledy",
+      "ADMIN - contextual help i modal akcji"
+    ],
+    "style": [
+      "Czytelny dashboard techniczny, bez ASCII-art zajmujacego ekran.",
+      "Kolory sa opcjonalnym ulepszeniem, ale semantyka nie moze zalezec tylko od koloru.",
+      "Statusy maja tekstowe symbole: RUNNING, OK, FAILED, QUEUED, CANCELLED, OFFLINE.",
+      "Na waskim ekranie priorytet: daemon, runs, task state, provider/model. Usage i event details moga byc ukryte."
+    ]
+  },
+  "integration_order": [
+    "P1 IPC/store DTO.",
+    "Rownolegle P2 state/client oraz poczatek P5 launchera po ustaleniu CLI contract.",
+    "P3 renderer/input/app.",
+    "P4 admin actions.",
+    "Integracja P5 macOS launcher.",
+    "P6 E2E i manual smoke test.",
+    "P7 dokumentacja oraz pelna bramka jakosci."
+  ],
+  "definition_of_done": [
+    "pi-many-agents dashboard na macOS otwiera Dashboard w nowym oknie Terminal.app.",
+    "pi-many-agents dashboard --inline dziala w biezacym terminalu i jest testowalny bez GUI.",
+    "Dashboard pokazuje realny stan daemona, runow, taskow/workers, providerow i eventow.",
+    "Dashboard aktualizuje sie live i odzyskuje stan po reconnect.",
+    "Panel admin potrafi uruchomic plan i anulowac wybrany run przez daemon IPC.",
+    "Abort all wymaga mocnego potwierdzenia.",
+    "Dashboard nie czyta aktywnej SQLite jako glownego API i nie duplikuje orchestratora.",
+    "Zamkniecie Dashboardu nie zatrzymuje daemona ani runow.",
+    "Nie ma command injection przez launcher macOS ani tekst danych renderowanych w terminalu.",
+    "npm test, npm run typecheck, npm run lint i npm run demo przechodza albo konkretna blokada jest precyzyjnie udokumentowana."
+  ],
+  "final_report_format": {
+    "implemented": "P1-P7 z lista plikow i najwazniejszych decyzji.",
+    "dashboard": "Komendy startowe, klawisze, panele i admin actions.",
+    "ipc": "Nowe typy request/response i limity snapshotu.",
+    "macos": "Jak otwierane jest nowe okno Terminal.app, jak escapowane sa argumenty i wynik manualnego smoke testu.",
+    "verification": "Dokladne komendy i wyniki test/typecheck/lint/demo, plus E2E daemon-dashboard.",
+    "remaining": "Tylko realne ograniczenia. Web UI, edit config, auto-merge i zdalny panel maja pozostac poza zakresem.",
+    "git": "Wlasne commity, zintegrowane worktrees i finalny status repo."
+  }
+}
