@@ -22,10 +22,31 @@ export interface SpawnSpec {
   signal?: AbortSignal;
 }
 
+export interface ProcessManagerOptions {
+  maxBufferBytes?: number;
+}
+
 export class ProcessManager {
   private readonly children = new Set<ChildProcess>();
+  private readonly maxBufferBytes: number;
+
+  constructor(options: ProcessManagerOptions = {}) {
+    this.maxBufferBytes = options.maxBufferBytes ?? 10 * 1024 * 1024; // 10MB default
+  }
 
   async run(spec: SpawnSpec): Promise<ManagedProcess> {
+    if (spec.signal?.aborted) {
+      return {
+        stdout: "",
+        stderr: "pre-aborted",
+        events: [],
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+        cancelled: true,
+      };
+    }
+
     const child = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
       env: spec.env ?? process.env,
@@ -44,10 +65,22 @@ export class ProcessManager {
       cancelled: false,
     };
     let buffer = "";
+    let bufferExceeded = false;
+
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
+
+    const checkBuffer = () => {
+      if (!bufferExceeded && (result.stdout.length + result.stderr.length > this.maxBufferBytes)) {
+        bufferExceeded = true;
+        result.stderr += "\n[process-manager] max buffer limit exceeded";
+        this.kill(child);
+      }
+    };
+
     child.stdout?.on("data", (chunk: string) => {
       result.stdout += chunk;
+      checkBuffer();
       buffer += chunk;
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
@@ -56,14 +89,17 @@ export class ProcessManager {
         if (message) result.events.push(message);
       }
     });
+
     child.stderr?.on("data", (chunk: string) => {
       result.stderr += chunk;
+      checkBuffer();
     });
 
     const timer = setTimeout(() => {
       result.timedOut = true;
       this.kill(child);
     }, spec.timeoutMs);
+
     const onAbort = () => {
       result.cancelled = true;
       this.kill(child);
@@ -73,7 +109,8 @@ export class ProcessManager {
     try {
       await new Promise<void>((resolve, reject) => {
         child.once("error", reject);
-        child.once("exit", (code, signal) => {
+        // Wait for close (which guarantees stdio streams closed and drained)
+        child.once("close", (code, signal) => {
           result.exitCode = code;
           result.signal = signal;
           resolve();
@@ -92,7 +129,7 @@ export class ProcessManager {
   }
 
   signal(child: ChildProcess, signal: NodeJS.Signals): void {
-    if (!child.pid) return;
+    if (!child.pid || child.pid <= 0) return;
     try {
       process.kill(-child.pid, signal);
     } catch {
@@ -115,13 +152,20 @@ export class ProcessManager {
   async cleanup(): Promise<void> {
     const pending = [...this.children];
     for (const child of pending) this.kill(child);
-    await Promise.all(pending.map((child) => child.exitCode !== null ? undefined : new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 1000);
-      child.once("exit", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    })));
+    await Promise.all(
+      pending.map(
+        (child) =>
+          child.exitCode !== null
+            ? undefined
+            : new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, 1000);
+                child.once("close", () => {
+                  clearTimeout(timer);
+                  resolve();
+                });
+              })
+      )
+    );
     for (const child of pending) this.children.delete(child);
   }
 }

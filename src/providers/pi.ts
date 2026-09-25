@@ -118,7 +118,7 @@ function assistantText(stdout: string): string {
       // Pi diagnostics must not break report collection.
     }
   }
-  return parts.filter(Boolean).join("\n");
+  return parts.length > 0 ? parts.filter(Boolean).join("\n") : stdout;
 }
 
 function contentToText(content: unknown): string {
@@ -139,13 +139,17 @@ function usageFromJsonl(stdout: string): Usage | undefined {
   for (const line of stdout.split("\n")) {
     if (!line.includes("usage")) continue;
     try {
-      const event = JSON.parse(line) as { usage?: { input?: number; output?: number; cacheRead?: number; cost?: number } };
-      if (!event.usage) continue;
+      const event = JSON.parse(line) as {
+        usage?: { input?: number; output?: number; cacheRead?: number; cost?: number; inputTokens?: number; outputTokens?: number };
+        message?: { usage?: { input?: number; output?: number; cacheRead?: number; cost?: number; inputTokens?: number; outputTokens?: number } };
+      };
+      const u = event.usage ?? event.message?.usage;
+      if (!u) continue;
       usage = {
-        inputTokens: event.usage.input,
-        outputTokens: event.usage.output,
-        cachedTokens: event.usage.cacheRead,
-        estimatedCost: event.usage.cost,
+        inputTokens: u.inputTokens ?? u.input,
+        outputTokens: u.outputTokens ?? u.output,
+        cachedTokens: u.cacheRead,
+        estimatedCost: u.cost,
       };
     } catch {
       // ignore
