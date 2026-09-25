@@ -163,11 +163,12 @@ Orkiestrator sprawdza `available()` przed wykonaniem. Niedostępny adapter końc
 ## Rozszerzenie Pi i daemon
 
 ```bash
-node bin/pi-many-agents.js daemon
 pi --extension ./extensions/index.ts
 ```
 
 Komenda rozszerzenia: `/many <plan.json>`.
+
+`/many` najpierw laczy sie z daemonem w `.pi-many-agents/daemon.sock` wzgledem workspace. Jesli socket nie istnieje albo pozostala po nim nieaktywna sciezka (`ENOENT` / `ECONNREFUSED`), rozszerzenie automatycznie uruchamia odłączony daemon w tym samym katalogu i ponawia polaczenie. Reczne uruchomienie `node bin/pi-many-agents.js daemon` nadal jest wspierane, ale nie jest wymagane dla normalnego uzycia `/many`.
 
 Daemon zarządza stanem w `.pi-many-agents/daemon.sock`, `.pi-many-agents/daemon.pid` oraz SQLite `.pi-many-agents/state.db` w trybie WAL:
 - Dedykowany, wersjonowany protokół IPC (`src/protocol/ipc.ts`).
