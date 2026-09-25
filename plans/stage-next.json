@@ -1,0 +1,206 @@
+{
+  "stage": "next",
+  "provider": "pi",
+  "notes": "Harden Stage 2 and design the next vertical slice (daemon + worktrees + L0). Independent inspect/review tasks run in parallel. Design and integrate wait on those reviews. Real Pi workers only (pi --print --mode json). Fake provider is not allowed for this plan. Do not modify Pi core. If Pi is unavailable, fail — do not silently switch providers.",
+  "tasks": [
+    {
+      "id": "gap-audit",
+      "title": "Audit done vs INIT_short",
+      "objective": "Compare INIT_short and docs/roadmap.md with the current tree. List what Stage 0/1/2 already ship, what Stage 3 only stubs, and the smallest next slice that does not rebuild bootstrap.",
+      "type": "inspect",
+      "priority": 3,
+      "dependencies": [],
+      "relevantFiles": [
+        "INIT_short",
+        "docs/roadmap.md",
+        "docs/architecture.md",
+        "plans/stage-2-findings.md",
+        "README.md"
+      ],
+      "constraints": [
+        "Do not modify Pi core.",
+        "Do not treat fake-provider Stage 2 reports as semantic reviews."
+      ],
+      "expectedOutput": "Ordered gap list: done / partial / missing. Recommend one vertical slice only.",
+      "modelPolicy": { "reasoning": "low" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "low"
+    },
+    {
+      "id": "orchestrator-inspect",
+      "title": "Inspect orchestrator run loop",
+      "objective": "Read the orchestrator, scheduler, worker-manager, and CLI. Determine what must be extracted so `pi-many-agents run <plan.json>` works without a Pi session, and what the thin /many extension should call instead of running in-process.",
+      "type": "inspect",
+      "priority": 2,
+      "dependencies": [],
+      "relevantFiles": [
+        "src/core/orchestrator.ts",
+        "src/core/scheduler.ts",
+        "src/core/worker-manager.ts",
+        "src/cli/main.ts",
+        "extensions/index.ts",
+        "bin/pi-many-agents.js"
+      ],
+      "constraints": [
+        "Extension must stay thin.",
+        "Factory must not spawn workers."
+      ],
+      "expectedOutput": "Concrete extraction points, public CLI flags, abort/cleanup behavior on session_shutdown.",
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "provider-health-inspect",
+      "title": "Inspect providers and no-paid-fallback",
+      "objective": "Review AgentProvider implementations and catalog. Confirm available() is honest, Pi profiles still use pi --print --mode json, and there is no silent switch from fake/local/unavailable to a paid cloud model.",
+      "type": "review",
+      "priority": 2,
+      "dependencies": [],
+      "relevantFiles": [
+        "src/providers/provider.ts",
+        "src/providers/catalog.ts",
+        "src/providers/pi.ts",
+        "src/providers/fake.ts",
+        "src/providers/ollama.ts",
+        "src/providers/docker-mistral.ts",
+        "docs/decisions/0004-stage3-pi-profiles.md",
+        "docs/decisions/0006-ollama-gemma4.md"
+      ],
+      "constraints": [
+        "Do not invent CLI flags or provider APIs.",
+        "If a provider is unavailable, report that; do not route to paid."
+      ],
+      "expectedOutput": "Capability matrix, unavailable providers, fallback risks, required tests.",
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "test-gap",
+      "title": "Find missing tests for next slice",
+      "objective": "Read existing tests. Name missing coverage for daemon abort/cleanup, worktree single-writer, L0 skipped when unavailable, no paid fallback, and /many compact reports after thrown runs.",
+      "type": "test",
+      "priority": 1,
+      "dependencies": [],
+      "relevantFiles": [
+        "test/orchestrator.test.ts",
+        "test/stage2.test.ts",
+        "test/ollama.test.ts",
+        "test/mistral.test.ts",
+        "extensions/index.ts"
+      ],
+      "modelPolicy": { "reasoning": "low" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "low"
+    },
+    {
+      "id": "packet-isolation",
+      "title": "Confirm task packet isolation",
+      "objective": "Review renderTaskPacket and /many. Confirm workers never receive parent conversation state. List any field that would leak session history if added carelessly.",
+      "type": "inspect",
+      "priority": 1,
+      "dependencies": [],
+      "relevantFiles": [
+        "src/core/task.ts",
+        "extensions/index.ts",
+        "docs/pi-integration.md"
+      ],
+      "modelPolicy": { "reasoning": "low" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "low"
+    },
+    {
+      "id": "worktree-design",
+      "title": "Design git worktrees and single-writer",
+      "objective": "Propose the minimal worktree layout worktrees/<taskId> for type=code only, path-prefix locks, and AgentReport.changes relative to the worktree. Orchestrator must not auto-merge. Do not implement in this task.",
+      "type": "research",
+      "priority": 1,
+      "dependencies": ["orchestrator-inspect", "packet-isolation"],
+      "relevantFiles": [
+        "src/core/task.ts",
+        "src/types.ts",
+        "docs/roadmap.md",
+        "INIT_short"
+      ],
+      "constraints": [
+        "Coding workers must not share a dirty tree.",
+        "Non-code tasks stay in the main workspace read-only unless specified."
+      ],
+      "expectedOutput": "API sketch, lock rules, cleanup, test cases, ADR outline for 0008-worktrees.",
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "daemon-store-design",
+      "title": "Design daemon + store",
+      "objective": "Propose how the run loop leaves the Pi process: CLI daemon or one-shot runner, how /many attaches, how session_shutdown aborts, and a Store interface (SQLite preferred, JSONL acceptable with justification). Do not implement in this task.",
+      "type": "research",
+      "priority": 2,
+      "dependencies": ["gap-audit", "orchestrator-inspect"],
+      "relevantFiles": [
+        "src/cli/main.ts",
+        "extensions/index.ts",
+        "src/telemetry/logger.ts",
+        "docs/architecture.md",
+        "docs/decisions/0001-external-orchestrator.md"
+      ],
+      "constraints": [
+        "No distributed system. Local subprocesses are enough.",
+        "Do not require paid APIs for the happy path."
+      ],
+      "expectedOutput": "Process model, attach protocol, persistence schema, ADR outline for 0007-daemon.",
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "l0-local-design",
+      "title": "Design local L0 advisor",
+      "objective": "Propose using an available local provider (Ollama gemma4 if available()) only for classify, report compression, near-dup fingerprint assist, and escalate recommendation. L0 must not spawn processes or edit files. If unavailable, skip and log.",
+      "type": "research",
+      "priority": 1,
+      "dependencies": ["provider-health-inspect"],
+      "relevantFiles": [
+        "src/providers/ollama.ts",
+        "src/core/dedup.ts",
+        "src/routing/rules.ts",
+        "docs/decisions/0006-ollama-gemma4.md"
+      ],
+      "constraints": [
+        "No silent paid fallback.",
+        "Orchestrator remains authoritative; L0 only advises."
+      ],
+      "expectedOutput": "L0 call sites, skip behavior, tests when Ollama is down.",
+      "modelPolicy": { "reasoning": "medium" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "medium"
+    },
+    {
+      "id": "integrate-next",
+      "title": "Integrate next-slice change list",
+      "objective": "Read the other task reports and produce one ordered implementation list for the primary agent: files to touch, tests to add, ADRs to write, commands to run (test, lint, typecheck, demo). Do not edit Pi core. Do not start Codex/Grok/Gemini standalone adapters.",
+      "type": "other",
+      "priority": 3,
+      "dependencies": [
+        "gap-audit",
+        "orchestrator-inspect",
+        "provider-health-inspect",
+        "test-gap",
+        "packet-isolation",
+        "worktree-design",
+        "daemon-store-design",
+        "l0-local-design"
+      ],
+      "relevantFiles": [
+        "docs/roadmap.md",
+        "plans/stage-2-findings.md"
+      ],
+      "expectedOutput": "Prioritized change list, stop condition, and three follow-up /many tasks.",
+      "modelPolicy": { "reasoning": "high" },
+      "permissions": { "read": true, "write": false, "shell": false },
+      "recommendedReasoning": "high"
+    }
+  ]
+}
