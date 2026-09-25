@@ -102,7 +102,7 @@ export class PiProfileProvider implements AgentProvider {
   }
 
   capabilities(): ProviderCapabilities {
-    return { ...this.inner.capabilities(), contextWindow: 1_000_000, models: this.models };
+    return { ...this.inner.capabilities(), models: this.models };
   }
 
   spawn(config: WorkerConfig): Promise<WorkerHandle> {

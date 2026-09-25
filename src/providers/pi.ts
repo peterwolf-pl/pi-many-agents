@@ -52,6 +52,8 @@ export class PiProvider implements AgentProvider {
       task.permissions.write ? "edit,write" : "",
       task.permissions.shell ? "bash" : "",
     ].filter(Boolean);
+    const effectiveModel = task.modelPolicy.model ?? worker.model;
+    const effectiveReasoning = task.modelPolicy.reasoning ?? "low";
     const args = [
       "--print",
       "--mode",
@@ -59,14 +61,16 @@ export class PiProvider implements AgentProvider {
       "--no-session",
       "--no-extensions",
       "--thinking",
-      THINKING[task.modelPolicy.reasoning],
+      THINKING[effectiveReasoning],
     ];
     if (tools.length) args.push("--tools", tools.join(","));
     else args.push("--no-tools");
     if (task.modelPolicy.provider && task.modelPolicy.provider !== "pi" && task.modelPolicy.provider !== "fake") {
       args.push("--provider", task.modelPolicy.provider);
     }
-    if (task.modelPolicy.model) args.push("--model", task.modelPolicy.model);
+    if (effectiveModel && effectiveModel !== "fake-deterministic") {
+      args.push("--model", effectiveModel);
+    }
     args.push("--", renderTaskPacket(task));
     const managed = await this.processes.run({
       command: this.config.piBinary,

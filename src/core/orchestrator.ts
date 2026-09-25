@@ -11,6 +11,7 @@ import { dedupeTasks } from "./dedup.ts";
 import { WorkerHealth } from "./health.ts";
 import { TaskQueue } from "./scheduler.ts";
 import { WorkerManager } from "./worker-manager.ts";
+import { validateRunOptions } from "./plan.ts";
 
 export class Orchestrator {
   readonly bus = new EventBus();
@@ -34,6 +35,7 @@ export class Orchestrator {
   }
 
   async run(tasks: AgentTask[], options: RunOptions = {}): Promise<RunResult> {
+    validateRunOptions(options);
     const prepared = options.dedupe === false ? { tasks, dropped: [] } : dedupeTasks(tasks);
     assertAcyclic(prepared.tasks);
     const maxConcurrent = options.maxConcurrentWorkers ?? this.config.maxConcurrentWorkers;
@@ -111,7 +113,7 @@ export class Orchestrator {
             worker.state = "cancelled";
             break;
           }
-          report = await worker.run({ ...task, modelPolicy: { ...task.modelPolicy, reasoning: plan.reasoning, timeoutMs: plan.timeoutMs } });
+          report = await worker.run({ ...task, modelPolicy: { ...task.modelPolicy, model: plan.model, reasoning: plan.reasoning, timeoutMs: plan.timeoutMs } });
           if (!retryable(report) || attempt === attempts) break;
           await publish(createMessage("task.progress", worker.id, { attempt, retry: true, error: report.error }, task.id));
         }

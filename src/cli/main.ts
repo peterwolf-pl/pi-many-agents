@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { decomposeMarkdown } from "../core/decompose.ts";
 import { dependencyGraph } from "../core/graph.ts";
 import { createTask } from "../core/task.ts";
+import { parsePlan, validateRunOptions } from "../core/plan.ts";
 import { runTasks } from "../index.ts";
 import type { AgentTask } from "../types.ts";
 import { startDaemon } from "../daemon/server.ts";
@@ -34,8 +35,8 @@ pi-many-agents daemon
     const planFlag = rest.indexOf("--plan");
     const planPath = planFlag >= 0 ? rest[planFlag + 1] : undefined;
     if (!planPath) throw new Error("--plan is required");
-    const raw = JSON.parse(await readFile(planPath, "utf8")) as { tasks: Array<Partial<AgentTask> & Pick<AgentTask, "id" | "title" | "objective">> };
-    process.stdout.write(`${JSON.stringify(dependencyGraph(raw.tasks.map((task) => createTask(task))), null, 2)}\n`);
+    const plan = parsePlan(await readFile(planPath, "utf8"));
+    process.stdout.write(`${JSON.stringify(dependencyGraph(plan.tasks), null, 2)}\n`);
     return;
   }
   if (command !== "run") throw new Error(`unknown command: ${command}`);
@@ -44,12 +45,17 @@ pi-many-agents daemon
   if (!planPath) throw new Error("--plan is required");
   const providerFlag = rest.indexOf("--provider");
   const concurrencyFlag = rest.indexOf("--concurrency");
-  const raw = JSON.parse(await readFile(planPath, "utf8")) as { tasks: Array<Partial<AgentTask> & Pick<AgentTask, "id" | "title" | "objective">> };
-  const tasks = raw.tasks.map((task) => createTask(task));
-  const result = await runTasks(tasks, {
-    provider: providerFlag >= 0 ? rest[providerFlag + 1] : "fake",
-    maxConcurrentWorkers: concurrencyFlag >= 0 ? Number(rest[concurrencyFlag + 1]) : undefined,
-    maxRetries: rest.includes("--retries") ? Number(rest[rest.indexOf("--retries") + 1]) : undefined,
+  const plan = parsePlan(await readFile(planPath, "utf8"));
+  const provider = (providerFlag >= 0 ? rest[providerFlag + 1] : undefined) ?? plan.provider;
+  const maxConcurrentWorkers = concurrencyFlag >= 0 ? Number(rest[concurrencyFlag + 1]) : plan.concurrency;
+  const maxRetries = rest.includes("--retries") ? Number(rest[rest.indexOf("--retries") + 1]) : plan.maxRetries;
+
+  validateRunOptions({ maxConcurrentWorkers, maxRetries });
+
+  const result = await runTasks(plan.tasks, {
+    provider,
+    maxConcurrentWorkers,
+    maxRetries,
   });
   process.stdout.write(`${result.statusText}\n`);
   process.stdout.write(`${JSON.stringify({ reports: result.reports }, null, 2)}\n`);

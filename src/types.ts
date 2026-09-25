@@ -18,7 +18,7 @@ export type ReportStatus = "completed" | "failed" | "partial";
 export interface ModelPolicy {
   provider?: string;
   model?: string;
-  reasoning: ReasoningLevel;
+  reasoning?: ReasoningLevel;
   maxTokens?: number;
   timeoutMs?: number;
 }
@@ -83,6 +83,7 @@ export interface ExecutionPlan {
   reasoning: ReasoningLevel;
   timeoutMs: number;
   tokenBudget?: number;
+  reasoningChanged?: { from: ReasoningLevel; to: ReasoningLevel; reason: string };
 }
 
 export type ProtocolEventType =

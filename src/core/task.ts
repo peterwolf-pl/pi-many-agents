@@ -8,10 +8,21 @@ const REASONING = new Set<ReasoningLevel>(["none", "low", "medium", "high"]);
 export function createTask(input: Partial<AgentTask> & Pick<AgentTask, "id" | "title" | "objective">): AgentTask {
   const type = input.type ?? "other";
   if (!TYPES.has(type)) throw new TaskValidationError(`invalid task type: ${String(type)}`);
-  const reasoning = input.modelPolicy?.reasoning ?? "low";
-  if (!REASONING.has(reasoning)) throw new TaskValidationError(`invalid reasoning: ${String(reasoning)}`);
-  if (!input.id.trim() || !input.title.trim() || !input.objective.trim()) {
+  const reasoning = input.modelPolicy?.reasoning;
+  if (reasoning !== undefined && !REASONING.has(reasoning)) {
+    throw new TaskValidationError(`invalid reasoning: ${String(reasoning)}`);
+  }
+  if (!input.id || !input.id.trim() || !input.title || !input.title.trim() || !input.objective || !input.objective.trim()) {
     throw new TaskValidationError("task id, title, and objective are required");
+  }
+  if (input.priority !== undefined && (!Number.isFinite(input.priority) || Number.isNaN(input.priority))) {
+    throw new TaskValidationError(`invalid priority: ${String(input.priority)}`);
+  }
+  if (input.modelPolicy?.timeoutMs !== undefined && (typeof input.modelPolicy.timeoutMs !== "number" || input.modelPolicy.timeoutMs <= 0 || !Number.isFinite(input.modelPolicy.timeoutMs))) {
+    throw new TaskValidationError(`invalid timeoutMs: ${String(input.modelPolicy.timeoutMs)}`);
+  }
+  if (input.modelPolicy?.maxTokens !== undefined && (typeof input.modelPolicy.maxTokens !== "number" || input.modelPolicy.maxTokens <= 0 || !Number.isFinite(input.modelPolicy.maxTokens))) {
+    throw new TaskValidationError(`invalid maxTokens: ${String(input.modelPolicy.maxTokens)}`);
   }
   const permissions: TaskPermissions = {
     read: input.permissions?.read ?? true,
@@ -96,7 +107,7 @@ export function renderTaskPacket(task: AgentTask): string {
     task.expectedOutput || "A compact structured report with summary and findings.",
     "",
     `Permissions: ${permissions.join(", ") || "none"}`,
-    `Reasoning: ${task.modelPolicy.reasoning}`,
+    `Reasoning: ${task.modelPolicy.reasoning ?? "low"}`,
     "",
     "End your final answer with a json fenced AgentReport containing status, summary, and findings.",
     "Do not include secrets or the parent conversation.",
