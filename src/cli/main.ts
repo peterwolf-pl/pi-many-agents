@@ -10,12 +10,17 @@ import { startDaemon } from "../daemon/server.ts";
 async function main(): Promise<void> {
   const [command = "help", ...rest] = process.argv.slice(2);
   if (command === "help" || command === "--help") {
-    process.stdout.write(`pi-many-agents run --plan <file> [--provider fake|pi] [--concurrency N] [--retries N]
+    process.stdout.write(`pi-many-agents run --plan <file> [--provider fake|pi|qwen4|mistral|...] [--concurrency N] [--retries N]
+pi-many-agents doctor
 pi-many-agents decompose <markdown> [--integrate]
 pi-many-agents graph --plan <file>
 pi-many-agents demo
 pi-many-agents daemon
 `);
+    return;
+  }
+  if (command === "doctor") {
+    await runDoctor();
     return;
   }
   if (command === "demo") {
@@ -71,6 +76,36 @@ async function runDemo(): Promise<void> {
   const result = await runTasks(tasks, { provider: "fake", maxConcurrentWorkers: 2, telemetryPath: ".pi-many-agents/demo-telemetry.jsonl" });
   process.stdout.write(`${result.statusText}\n`);
   process.stdout.write(`${JSON.stringify(result.reports.map((report) => ({ taskId: report.taskId, status: report.status, summary: report.summary })), null, 2)}\n`);
+}
+
+async function runDoctor(): Promise<void> {
+  const { loadConfig } = await import("../config/config.ts");
+  const { DockerMistralProvider } = await import("../providers/docker-mistral.ts");
+  const { OllamaProvider } = await import("../providers/ollama.ts");
+  const { PiProvider } = await import("../providers/pi.ts");
+  const { FakeProvider } = await import("../providers/fake.ts");
+
+  const config = await loadConfig();
+
+  const fake = new FakeProvider();
+  const pi = new PiProvider(config);
+  const qwen4 = new OllamaProvider({ name: "qwen4", baseUrl: config.ollama?.baseUrl, model: config.ollama?.model });
+  const mistral = new DockerMistralProvider({ baseUrl: config.mistral?.baseUrl, model: config.mistral?.model });
+
+  process.stdout.write("pi-many-agents doctor\n\n");
+
+  const fakeAvail = await fake.available();
+  process.stdout.write(`- fake: ${fakeAvail ? "AVAILABLE" : "UNAVAILABLE"}\n`);
+
+  const piAvail = await pi.available();
+  process.stdout.write(`- pi (cli): ${piAvail ? "AVAILABLE" : "UNAVAILABLE"}\n`);
+
+  const qwen4Model = (await qwen4.resolveModel()) ?? "not configured";
+  const qwen4Avail = await qwen4.available();
+  process.stdout.write(`- qwen4 (ollama ${config.ollama.baseUrl}): ${qwen4Avail ? `AVAILABLE (${qwen4Model})` : `NOT AVAILABLE (${qwen4Model})`}\n`);
+
+  const mistralAvail = await mistral.available();
+  process.stdout.write(`- mistral (docker ${config.mistral.baseUrl}): ${mistralAvail ? `AVAILABLE (${config.mistral.model})` : `NOT AVAILABLE (${config.mistral.model})`}\n`);
 }
 
 main().catch((error: unknown) => {

@@ -5,7 +5,7 @@ import type { AgentProvider, ProviderRunResult } from "./types.ts";
 
 export interface OllamaProviderOptions {
   name: string;
-  model: string;
+  model?: string;
   baseUrl?: string;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
@@ -13,7 +13,7 @@ export interface OllamaProviderOptions {
 
 export class OllamaProvider implements AgentProvider {
   readonly name: string;
-  private readonly model: string;
+  private readonly configuredModel?: string;
   private readonly baseUrl: string;
   private readonly signal?: AbortSignal;
   private readonly fetchImpl: typeof fetch;
@@ -21,22 +21,37 @@ export class OllamaProvider implements AgentProvider {
 
   constructor(options: OllamaProviderOptions) {
     this.name = options.name;
-    this.model = options.model;
+    this.configuredModel = options.model;
     this.baseUrl = options.baseUrl ?? "http://127.0.0.1:11434";
     this.signal = options.signal;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async available(): Promise<boolean> {
+  async resolveModel(targetModel?: string): Promise<string | undefined> {
+    if (targetModel && targetModel.trim()) return targetModel.trim();
+    if (this.configuredModel && this.configuredModel.trim()) return this.configuredModel.trim();
+
+    // Dynamic discovery in tags
     const tags = await this.tags();
-    const listed = tags.includes(this.model) || tags.some((name) => name.startsWith(`${this.model}:`) || this.model.startsWith(`${name}:`));
+    // Look for exact or prefix matching this.name (e.g. qwen4, qwen4:latest, qwen4:7b)
+    const match = tags.find((tag) => tag === this.name || tag.startsWith(`${this.name}:`));
+    return match;
+  }
+
+  async available(forModel?: string): Promise<boolean> {
+    const modelToTest = await this.resolveModel(forModel);
+    if (!modelToTest) return false;
+
+    const tags = await this.tags();
+    const listed = tags.includes(modelToTest) || tags.some((t) => t.startsWith(`${modelToTest}:`));
     if (!listed) return false;
+
     try {
       const response = await this.fetchImpl(`${this.baseUrl}/api/show`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: this.model }),
-        signal: AbortSignal.timeout(1500),
+        body: JSON.stringify({ model: modelToTest }),
+        signal: AbortSignal.timeout(2000),
       });
       return response.ok;
     } catch {
@@ -52,19 +67,23 @@ export class OllamaProvider implements AgentProvider {
       shell: false,
       reasoningLevels: ["none", "low"],
       tokenUsageReporting: true,
-      models: [this.model],
+      models: this.configuredModel ? [this.configuredModel] : [],
     };
   }
 
   async spawn(config: WorkerConfig): Promise<WorkerHandle> {
-    return { id: config.id, provider: this.name, model: this.model, startedAt: Date.now() };
+    const effective = (await this.resolveModel(config.model)) ?? config.model ?? this.configuredModel ?? this.name;
+    return { id: config.id, provider: this.name, model: effective, startedAt: Date.now() };
   }
 
   async execute(worker: WorkerHandle, task: AgentTask): Promise<ProviderRunResult> {
     const started = Date.now();
-    if (!(await this.available())) {
-      return this.failed(worker, task, started, `ollama model ${this.model} is not loaded`);
+    const effectiveModel = await this.resolveModel(task.modelPolicy.model ?? worker.model);
+    if (!effectiveModel || !(await this.available(effectiveModel))) {
+      const missingName = effectiveModel ?? task.modelPolicy.model ?? worker.model ?? this.name;
+      return this.failed(worker, task, started, `ollama model '${missingName}' is not available`);
     }
+
     const workerAc = new AbortController();
     this.activeAbortControllers.set(worker.id, workerAc);
 
@@ -76,18 +95,29 @@ export class OllamaProvider implements AgentProvider {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: task.modelPolicy.model ?? this.model,
+          model: effectiveModel,
           stream: false,
           messages: [{ role: "user", content: renderTaskPacket(task) }],
         }),
         signal: AbortSignal.any(signals),
       });
+
       if (!response.ok) return this.failed(worker, task, started, `ollama HTTP ${response.status}`);
-      const body = (await response.json()) as {
+
+      let body: {
         message?: { content?: string };
         prompt_eval_count?: number;
         eval_count?: number;
       };
+      try {
+        body = (await response.json()) as typeof body;
+      } catch {
+        return this.failed(worker, task, started, "invalid JSON from ollama /api/chat");
+      }
+
+      const inputTokens = typeof body.prompt_eval_count === "number" ? body.prompt_eval_count : undefined;
+      const outputTokens = typeof body.eval_count === "number" ? body.eval_count : undefined;
+
       return {
         report: wrapTextReport({
           taskId: task.id,
@@ -96,10 +126,10 @@ export class OllamaProvider implements AgentProvider {
           durationMs: Date.now() - started,
           status: body.message?.content ? "completed" : "failed",
           error: body.message?.content ? undefined : "empty ollama response",
-          usage: { inputTokens: body.prompt_eval_count, outputTokens: body.eval_count },
+          usage: inputTokens !== undefined || outputTokens !== undefined ? { inputTokens, outputTokens } : undefined,
         }),
         process: { stdout: "", stderr: "", events: [], exitCode: 0, signal: null, timedOut: false, cancelled: false },
-        handle: worker,
+        handle: { ...worker, model: effectiveModel },
       };
     } catch (err) {
       const isCancelled = Boolean(workerAc.signal.aborted || this.signal?.aborted);
@@ -113,7 +143,7 @@ export class OllamaProvider implements AgentProvider {
           error: isCancelled ? "cancelled" : (err as Error).message,
         }),
         process: { stdout: "", stderr: "", events: [], exitCode: 1, signal: null, timedOut: false, cancelled: isCancelled },
-        handle: worker,
+        handle: { ...worker, model: effectiveModel },
       };
     } finally {
       this.activeAbortControllers.delete(worker.id);
@@ -126,9 +156,9 @@ export class OllamaProvider implements AgentProvider {
 
   private async tags(): Promise<string[]> {
     try {
-      const response = await this.fetchImpl(`${this.baseUrl}/api/tags`, { signal: AbortSignal.timeout(1500) });
+      const response = await this.fetchImpl(`${this.baseUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
       if (!response.ok) return [];
-      const body = await response.json() as { models?: Array<{ name?: string }> };
+      const body = (await response.json()) as { models?: Array<{ name?: string }> };
       return (body.models ?? []).map((model) => model.name ?? "").filter(Boolean);
     } catch {
       return [];
