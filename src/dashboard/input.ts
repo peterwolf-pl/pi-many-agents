@@ -100,6 +100,18 @@ export function handleKey(state: DashboardState, key: Key): InputResult {
     return { action: { type: "MODAL", modal: { type: "confirm-abort-all", confirmBuffer: "" } } };
   }
 
+  if (key === "u" || key === "U") {
+    return { action: { type: "TOGGLE_USAGE_SCOPE" } };
+  }
+
+  if (key === "[" || key === "\u001b[5~") {
+    return { action: { type: "SCROLL_ACTIVITY", delta: -5 } };
+  }
+
+  if (key === "]" || key === "\u001b[6~") {
+    return { action: { type: "SCROLL_ACTIVITY", delta: 5 } };
+  }
+
   if (key === "\u001b[A" || key === "k" || key === "K") {
     const idx = state.runs.findIndex((r) => r.id === state.selectedRunId);
     if (idx > 0) {

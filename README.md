@@ -21,7 +21,7 @@ Stan wdrożony po etapie **Stage 3A**:
 | Daemon | Serwer Unix socket, pojedyncza instancja, buforowane JSONL, SQLite z `runId` |
 | Worktrees | Automatyczna izolacja zadań z `write: true`, blokady ścieżek, zachowanie zmian |
 | L0 | Klasyfikacja, kompresja i rekomendacja reasoningu (moduł doradczy; router odroczony) |
-| Dashboard | Terminal TUI (Stage 5) z snapshotami IPC, live events, admin run/abort, macOS Terminal.app launcher |
+| Dashboard | Terminal Control Room (Stage 6) z token accounting, alternate screen, panelem USAGE, live activity i launcherem macOS |
 
 ## Wymagania
 
@@ -177,19 +177,31 @@ Daemon zarządza stanem w `.pi-many-agents/daemon.sock`, `.pi-many-agents/daemon
 - Każdy run identyfikowany przez `requestId` i posiadający niezależny `AbortController`.
 - Zamknięcie daemona najpierw anuluje aktywne procesy, czeka na ich zakończenie, a następnie bezpiecznie zamyka bazę i pliki socket/pid.
 
-## Terminal Dashboard (Stage 5)
+## Terminal Dashboard (Stage 6 Control Room)
 
-Dashboard to klient TUI podłączony wyłącznie przez IPC do daemona (nie czyta SQLite bezpośrednio). Uruchomienie `pi-many-agents dashboard` na macOS otwiera nowe okno Terminal.app; flaga `--inline` wymusza uruchomienie w bieżącym terminalu (dla testów/CI/non-darwin).
+Dashboard to terminalowy pokój kontrolny (Control Room) podłączony wyłącznie przez IPC do daemona (nie czyta SQLite bezpośrednio):
+- **Token Accounting & Observability:** śledzi zużycie tokenów (`inputTokens`, `outputTokens`, `cachedTokens`, `totalTokens = in + out`), rzeczywisty koszt (`estimatedCost` z coverage) oraz runtime model/reasoning.
+- **Dedykowany panel USAGE:** przełączanie zakresu widoku między wybranym uruchomieniem a sumą globalną sesji (klawisz `u`).
+- **Bezpieczny cykl życia terminala:** wejście do alternate screen buffer (`\x1b[?1049h`), ukrywanie kursora, oraz bezwzględne przywrócenie normalnego bufora powłoki przy wyjściu (`q`, `Ctrl+C`, `SIGINT`, `SIGTERM`).
+- **Live Activity Feed:** scrollowalny strumień zdarzeń na żywo (`[` / `]` lub `PageUp` / `PageDown`).
+- **macOS Launcher:** uruchomienie `pi-many-agents dashboard` na macOS otwiera nowe okno Terminal.app; flaga `--inline` uruchamia TUI bezpośrednio w bieżącym terminalu.
 
 ```bash
 pi-many-agents dashboard          # macOS: nowe okno Terminal.app
-pi-many-agents dashboard --inline # bieżący terminal (zalecane w testach)
+pi-many-agents dashboard --inline # bieżący terminal (zalecane w testach i CI)
 pi-many-agents dashboard --new-window # wymuś launcher nawet na non-darwin
 ```
 
-Klawisze: ↑/k ↓/j wybór runu, Enter=szczegóły, r=refresh, n=uruchom plan (modal), a=abort selected (y/n confirm), x=abort-all (ABORT confirm), q=quit. Zamknięcie dashboardu nie zatrzymuje daemona ani aktywnych runów.
-
-Admin panel pozwala uruchomić plan przez daemon IPC i bezpiecznie anulować wybrane/all runy z potwierdzeniem.
+Klawisze:
+- `↑`/`k`, `↓`/`j` – wybór uruchomienia (RUNS)
+- `Enter` – szczegóły zadania / modal
+- `u` – przełączanie zakresu metryk (wybrany run / globalne usage)
+- `[` / `]` – przewijanie strumienia Live Activity
+- `r` – odświeżenie snapshotu
+- `n` – uruchom nowy plan (monit o ścieżkę do pliku)
+- `a` – anuluj zaznaczony run (`y`/`n`)
+- `x` – zatrzymaj wszystkie uruchomienia (wymaga wpisania `ABORT` i `Enter`)
+- `q` / `Ctrl+C` – bezpieczne wyjście (daemon i zadania w tle działają dalej bez zakłóceń)
 
 ## Izolacja i znane ograniczenia
 

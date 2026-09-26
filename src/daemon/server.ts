@@ -5,7 +5,12 @@ import { existsSync } from "node:fs";
 import { createOrchestrator, loadConfig } from "../index.ts";
 import type { ManyAgentsConfig } from "../config/config.ts";
 import type { AgentTask, ProtocolMessage, RunOptions, RunResult } from "../types.ts";
-import { createStore, type Store } from "./store.ts";
+import {
+  createStore,
+  type Store,
+  aggregateUsage,
+  aggregateProviderUsage,
+} from "./store.ts";
 import type {
   RunRecord,
   RunSummary,
@@ -328,7 +333,10 @@ export class DaemonServer {
       };
     });
 
-    // For simplicity in snapshot, use global task counts; per-run counts would require join in store
+    const allReports = this.store.listReports();
+    const globalUsage = aggregateUsage(allReports);
+    const providerUsage = aggregateProviderUsage(allReports, taskViews);
+
     return {
       daemon: {
         running: this.running,
@@ -341,6 +349,8 @@ export class DaemonServer {
       providers: this.buildProvidersStatus(),
       recentEvents,
       tasks: taskViews,
+      usage: globalUsage,
+      providerUsage,
     };
   }
 
@@ -349,7 +359,8 @@ export class DaemonServer {
     const tasks = this.store.listTaskViews(runId);
     const reports = this.store.listReports(runId);
     const events = this.store.listEvents(runId, 50);
-    return { run, tasks, reports, events };
+    const usage = aggregateUsage(reports);
+    return { run, tasks, reports, events, usage };
   }
 
   private buildProvidersStatus(): ProviderStatus[] {

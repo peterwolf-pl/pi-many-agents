@@ -1,4 +1,12 @@
-import type { DashboardSnapshot, RunDetails, TaskView, ProviderStatus, RunSummary } from "../daemon/store.ts";
+import type {
+  DashboardSnapshot,
+  RunDetails,
+  TaskView,
+  ProviderStatus,
+  RunSummary,
+  UsageSummary,
+  ProviderUsageSummary,
+} from "../daemon/store.ts";
 import type { ProtocolMessage } from "../types.ts";
 
 export interface DashboardState {
@@ -13,6 +21,10 @@ export interface DashboardState {
   allTasks?: TaskView[];
   providers: ProviderStatus[];
   events: Array<{ ts: number; type: string; taskId?: string; msg: string }>;
+  globalUsage?: UsageSummary;
+  providerUsage?: ProviderUsageSummary[];
+  usageScope: "selected" | "global";
+  activityScroll: number;
   lastError?: string;
   adminModal?: {
     type: "confirm-abort" | "confirm-abort-all" | "new-run" | "details";
@@ -35,6 +47,8 @@ export type DashboardAction =
   | { type: "ERROR"; error: string }
   | { type: "RECONNECT"; status: "online" | "offline" | "connecting" }
   | { type: "RESIZE"; cols: number; rows: number }
+  | { type: "TOGGLE_USAGE_SCOPE" }
+  | { type: "SCROLL_ACTIVITY"; delta: number }
   | { type: "CLEAR_ERROR" };
 
 const MAX_EVENTS = 50;
@@ -57,6 +71,8 @@ export function initialState(dimensions = { cols: 80, rows: 24 }): DashboardStat
     tasks: [],
     providers: [],
     events: [],
+    usageScope: "selected",
+    activityScroll: 0,
     dimensions,
   };
 }
@@ -82,6 +98,8 @@ export function dashboardReducer(state: DashboardState, action: DashboardAction)
         tasks: selectedTasks.length > 0 ? selectedTasks : (selected === state.selectedRunId ? state.tasks : []),
         providers: s.providers ?? state.providers,
         events: [...(s.recentEvents ?? []).map(toEventLog), ...state.events].slice(0, MAX_EVENTS),
+        globalUsage: s.usage,
+        providerUsage: s.providerUsage,
         lastError: undefined,
       };
     }
@@ -135,6 +153,17 @@ export function dashboardReducer(state: DashboardState, action: DashboardAction)
         ...state,
         daemon: { ...state.daemon, status: action.status },
       };
+    }
+    case "TOGGLE_USAGE_SCOPE": {
+      return {
+        ...state,
+        usageScope: state.usageScope === "selected" ? "global" : "selected",
+      };
+    }
+    case "SCROLL_ACTIVITY": {
+      const maxScroll = Math.max(0, state.events.length - 5);
+      const newScroll = Math.min(Math.max(0, state.activityScroll + action.delta), maxScroll);
+      return { ...state, activityScroll: newScroll };
     }
     case "RESIZE": {
       return { ...state, dimensions: { cols: action.cols, rows: action.rows } };

@@ -20,6 +20,8 @@ describe("dashboard state/reducer", () => {
       taskCounts: { queued: 1, running: 1, completed: 1, failed: 0, cancelled: 0 },
       providers: [{ name: "pi", model: "pi", status: "registered" }],
       recentEvents: [],
+      usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, costKnown: false, reportsWithUsage: 0, reportsTotal: 0 },
+      providerUsage: [],
     };
     const s0 = initialState();
     const s1 = dashboardReducer(s0, { type: "SNAPSHOT", payload: snap });

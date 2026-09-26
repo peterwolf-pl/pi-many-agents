@@ -94,13 +94,19 @@ pi-many-agents dashboard [--inline] [--new-window]
 
 async function runDemo(): Promise<void> {
   const { loadConfig } = await import("../config/config.ts");
+  const { DockerMistralProvider } = await import("../providers/docker-mistral.ts");
   const config = await loadConfig();
+
+  const mistral = new DockerMistralProvider({ baseUrl: config.mistral?.baseUrl, model: config.mistral?.model });
+  const isMistral = await mistral.available();
+  const provider = isMistral ? "mistral" : config.defaultProvider;
+
   const tasks = [
     createTask({ id: "A", title: "analyze scheduler", objective: "Analyze scheduler implementation.", type: "inspect", priority: 1, modelPolicy: { reasoning: "low", maxTokens: 40 }, permissions: { read: true, write: false, shell: false } }),
     createTask({ id: "B", title: "analyze provider", objective: "Analyze provider abstraction.", type: "review", priority: 1, modelPolicy: { reasoning: "low", maxTokens: 40 }, permissions: { read: true, write: false, shell: false } }),
     createTask({ id: "C", title: "propose tests", objective: "Analyze tests and propose missing coverage.", type: "test", priority: 0, dependencies: ["A"], modelPolicy: { reasoning: "low", maxTokens: 20 }, permissions: { read: true, write: false, shell: false } }),
   ];
-  const result = await runTasks(tasks, { provider: config.defaultProvider, maxConcurrentWorkers: 2, telemetryPath: ".pi-many-agents/demo-telemetry.jsonl" });
+  const result = await runTasks(tasks, { provider, maxConcurrentWorkers: 2, telemetryPath: ".pi-many-agents/demo-telemetry.jsonl" });
   process.stdout.write(`${result.statusText}\n`);
   process.stdout.write(`${JSON.stringify(result.reports.map((report) => ({ taskId: report.taskId, status: report.status, summary: report.summary })), null, 2)}\n`);
 }

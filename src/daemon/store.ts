@@ -3,6 +3,37 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AgentReport, AgentTask, ProtocolMessage } from "../types.ts";
 
+export interface UsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  estimatedCost?: number;
+  costKnown: boolean;
+  reportsWithUsage: number;
+  reportsTotal: number;
+}
+
+export interface ProviderUsageSummary {
+  provider: string;
+  model?: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  estimatedCost?: number;
+  reportsWithUsage: number;
+  reportsTotal: number;
+}
+
+export interface TaskUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  totalTokens?: number;
+  estimatedCost?: number;
+}
+
 export interface RunSummary {
   id: string;
   state: string;
@@ -13,6 +44,9 @@ export interface RunSummary {
   running: number;
   failed: number;
   queued: number;
+  usage?: UsageSummary;
+  elapsedMs?: number;
+  activeWorkers?: number;
 }
 
 export interface TaskView {
@@ -25,6 +59,8 @@ export interface TaskView {
   reasoning?: string;
   durationMs?: number;
   attempts?: number;
+  usage?: TaskUsage;
+  error?: string;
 }
 
 export interface ProviderStatus {
@@ -42,6 +78,8 @@ export interface DashboardSnapshot {
   providers: ProviderStatus[];
   recentEvents: ProtocolMessage[];
   tasks?: TaskView[];
+  usage: UsageSummary;
+  providerUsage: ProviderUsageSummary[];
 }
 
 export interface RunDetails {
@@ -49,6 +87,7 @@ export interface RunDetails {
   tasks: TaskView[];
   reports: AgentReport[];
   events: ProtocolMessage[];
+  usage?: UsageSummary;
 }
 
 export interface RunRecord {
@@ -64,11 +103,107 @@ export interface StoreStatus {
   tasks: { queued: number; running: number; completed: number; failed: number; cancelled: number };
 }
 
+export function aggregateUsage(reports: AgentReport[]): UsageSummary {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedTokens = 0;
+  let estimatedCost: number | undefined;
+  let costKnown = false;
+  let reportsWithUsage = 0;
+
+  for (const r of reports) {
+    if (r.usage) {
+      const hasTokens =
+        typeof r.usage.inputTokens === "number" || typeof r.usage.outputTokens === "number";
+      if (hasTokens) {
+        reportsWithUsage++;
+        inputTokens += r.usage.inputTokens ?? 0;
+        outputTokens += r.usage.outputTokens ?? 0;
+        cachedTokens += r.usage.cachedTokens ?? 0;
+      }
+      if (typeof r.usage.estimatedCost === "number") {
+        costKnown = true;
+        estimatedCost = (estimatedCost ?? 0) + r.usage.estimatedCost;
+      }
+    }
+  }
+
+  return {
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    totalTokens: inputTokens + outputTokens,
+    estimatedCost,
+    costKnown,
+    reportsWithUsage,
+    reportsTotal: reports.length,
+  };
+}
+
+export function aggregateProviderUsage(reports: AgentReport[], tasks: TaskView[]): ProviderUsageSummary[] {
+  const taskMap = new Map(tasks.map((t) => [t.id, t]));
+  const groups = new Map<
+    string,
+    {
+      provider: string;
+      model?: string;
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens: number;
+      estimatedCost?: number;
+      reportsWithUsage: number;
+      reportsTotal: number;
+    }
+  >();
+
+  for (const r of reports) {
+    const t = taskMap.get(r.taskId);
+    const provider = t?.provider ?? "unknown";
+    const model = t?.model;
+    const key = `${provider}:${model ?? ""}`;
+
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        provider,
+        model,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        reportsWithUsage: 0,
+        reportsTotal: 0,
+      };
+      groups.set(key, g);
+    }
+
+    g.reportsTotal++;
+    if (r.usage) {
+      const hasTokens =
+        typeof r.usage.inputTokens === "number" || typeof r.usage.outputTokens === "number";
+      if (hasTokens) {
+        g.reportsWithUsage++;
+        g.inputTokens += r.usage.inputTokens ?? 0;
+        g.outputTokens += r.usage.outputTokens ?? 0;
+        g.cachedTokens += r.usage.cachedTokens ?? 0;
+      }
+      if (typeof r.usage.estimatedCost === "number") {
+        g.estimatedCost = (g.estimatedCost ?? 0) + r.usage.estimatedCost;
+      }
+    }
+  }
+
+  return [...groups.values()].map((g) => ({
+    ...g,
+    totalTokens: g.inputTokens + g.outputTokens,
+  }));
+}
+
 export interface Store {
   createRun(runId: string, metadata?: Record<string, unknown>): void;
   updateRunState(runId: string, state: RunRecord["state"]): void;
   getRun(runId: string): RunRecord | undefined;
   listRuns(): RunRecord[];
+  getRunSummaries(): RunSummary[];
 
   upsertTask(runId: string, task: AgentTask, state?: string): void;
   updateTaskState(runId: string, taskId: string, state: string): void;
@@ -200,7 +335,6 @@ export class SqliteStore implements Store {
       );
     `);
 
-    // On startup, mark any incomplete runs as aborted
     this.db.exec(`
       UPDATE runs SET state = 'aborted', updated_at = unixepoch() * 1000 WHERE state = 'running';
       UPDATE tasks SET state = 'cancelled' WHERE state IN ('queued', 'running') AND run_id IN (
@@ -252,6 +386,39 @@ export class SqliteStore implements Store {
     }));
   }
 
+  getRunSummaries(): RunSummary[] {
+    if (this.closed) return [];
+    const runs = this.listRuns();
+    return runs.map((r) => {
+      const taskRows = this.db.prepare("SELECT state, COUNT(*) as c FROM tasks WHERE run_id = ? GROUP BY state").all(r.id) as Array<{ state: string; c: number }>;
+      const counts: Record<string, number> = { queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 };
+      let total = 0;
+      for (const row of taskRows) {
+        counts[row.state] = row.c;
+        total += row.c;
+      }
+
+      const runReports = this.listReports(r.id);
+      const usage = aggregateUsage(runReports);
+      const elapsedMs = r.state === "running" ? Date.now() - r.createdAt : Math.max(0, r.updatedAt - r.createdAt);
+
+      return {
+        id: r.id,
+        state: r.state,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        taskCount: total,
+        completed: counts.completed ?? 0,
+        running: counts.running ?? 0,
+        failed: (counts.failed ?? 0) + (counts.cancelled ?? 0),
+        queued: counts.queued ?? 0,
+        usage,
+        elapsedMs,
+        activeWorkers: counts.running ?? 0,
+      };
+    });
+  }
+
   upsertTask(runId: string, task: AgentTask, state = "queued"): void {
     if (this.closed) return;
     const stmt = this.db.prepare(
@@ -297,22 +464,59 @@ export class SqliteStore implements Store {
       const stmt = this.db.prepare("SELECT run_id, id, state, json FROM tasks ORDER BY id");
       rows = stmt.all() as unknown as TaskRow[];
     }
+
+    // Load reports and events to enrich TaskView
+    const reports = this.listReports(runId);
+    const reportMap = new Map(reports.map((rep) => [rep.taskId, rep]));
+
+    // Query events to extract runtime plan & attempt counts
+    const events = this.listEvents(runId, 500);
+    const planMap = new Map<string, { provider?: string; model?: string; reasoning?: string }>();
+    const attemptsMap = new Map<string, number>();
+
+    for (const ev of events) {
+      if (ev.taskId) {
+        if (ev.type === "task.started" && ev.payload?.plan) {
+          const plan = ev.payload.plan as { provider?: string; model?: string; reasoning?: string };
+          planMap.set(ev.taskId, { provider: plan.provider, model: plan.model, reasoning: plan.reasoning });
+        }
+        if (ev.type === "task.progress" && (ev.payload?.attempt as number)) {
+          attemptsMap.set(ev.taskId, Math.max(attemptsMap.get(ev.taskId) ?? 1, ev.payload.attempt as number));
+        }
+      }
+    }
+
     return rows.map((r) => {
       let task: Partial<AgentTask> = {};
       try {
         task = JSON.parse(r.json);
       } catch {}
       const mp = task.modelPolicy ?? {};
+      const rep = reportMap.get(r.id);
+      const runtimePlan = planMap.get(r.id);
+
+      const taskUsage: TaskUsage | undefined = rep?.usage
+        ? {
+            inputTokens: rep.usage.inputTokens,
+            outputTokens: rep.usage.outputTokens,
+            cachedTokens: rep.usage.cachedTokens,
+            totalTokens: (rep.usage.inputTokens ?? 0) + (rep.usage.outputTokens ?? 0),
+            estimatedCost: rep.usage.estimatedCost,
+          }
+        : undefined;
+
       return {
         id: r.id,
         title: task.title ?? r.id,
         state: r.state,
         runId: r.run_id,
-        provider: mp.provider,
-        model: mp.model,
-        reasoning: mp.reasoning,
-        durationMs: undefined,
-        attempts: undefined,
+        provider: runtimePlan?.provider ?? mp.provider,
+        model: runtimePlan?.model ?? mp.model,
+        reasoning: runtimePlan?.reasoning ?? mp.reasoning,
+        durationMs: rep?.durationMs,
+        attempts: attemptsMap.get(r.id) ?? (r.state === "completed" || r.state === "failed" ? 1 : undefined),
+        usage: taskUsage,
+        error: rep?.error,
       };
     });
   }

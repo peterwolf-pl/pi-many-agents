@@ -41,11 +41,18 @@ export class DashboardApp {
     if (this.running) return;
     this.running = true;
 
-    // raw mode
+    // raw mode and alternate screen
     if (this.stdin.isTTY) {
       this.stdin.setRawMode(true);
       emitKeypressEvents(this.stdin);
     }
+    if (this.stdout.isTTY) {
+      this.stdout.write("\x1b[?1049h\x1b[?25l");
+    }
+
+    const onSig = () => this.stop();
+    process.once("SIGINT", onSig);
+    process.once("SIGTERM", onSig);
 
     this.setupResize();
     this.setupInput();
@@ -257,7 +264,11 @@ export class DashboardApp {
         this.stdin.setRawMode(false);
       } catch {}
     }
-    process.stdout.write("\x1b[?25h\n");
+    if (this.stdout.isTTY) {
+      this.stdout.write("\x1b[?25h\x1b[?1049l");
+    } else {
+      this.stdout.write("\x1b[?25h\n");
+    }
     this.options.client.close();
     if (this.options.onExit) this.options.onExit();
   }
