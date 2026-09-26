@@ -200,6 +200,12 @@ Admin panel pozwala uruchomić plan przez daemon IPC i bezpiecznie anulować wyb
 - `L0Advisor` pozostaje modułem pomocniczym (nie wpiętym w produkcyjny routing kosztowy).
 - Budżet `maxTokens` nie jest twardo egzekwowany, jeśli dany backend modelu nie udostępnia parametru limitu.
 
+## Skill do pisania promptów Many Agents
+
+Repo zawiera skill `skills/writing-many-agents-prompts/SKILL.md` do przygotowywania wykonywalnych planów JSON dla `pi-many-agents`.
+
+Używaj go przy tworzeniu kolejnych Stage, rozbijaniu większego zadania na DAG workerów, doborze poziomu reasoningu, uprawnień, `writeScope`, zależności i końcowej weryfikacji. Skill uwzględnia aktualne ograniczenia routingu providerów oraz lokalnych adapterów Qwen4 i Mistral.
+
 ## Struktura kodu
 
 | Katalog | Odpowiedzialność |
