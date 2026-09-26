@@ -1,0 +1,458 @@
+{
+  "stage": "Stage 6 - Dashboard Observability & Token Accounting",
+  "goal": "Dopracować terminalowy dashboard pi-many-agents tak, aby działał jak czytelny control room: pokazywał rzeczywiste zużycie tokenów, koszt jeśli backend go raportuje, model/provider/reasoning, postęp runów i aktywność workerów, bez omijania daemon IPC.",
+  "context": {
+    "baseline": "main po Stage 5 terminal dashboard/admin i Stage 4 local models",
+    "donor_project": "peterwolf-pl/pi-orchestrator",
+    "donor_patterns": [
+      "wyraźna hierarchia control room zamiast samych tabel",
+      "alternate screen buffer i poprawne ukrywanie/przywracanie kursora",
+      "widoczny model i thinking/reasoning",
+      "liczniki input/output/total tokenów",
+      "session cumulative usage",
+      "live activity feed i czytelne stany"
+    ],
+    "do_not_copy": [
+      "provider-specific scraping limitów 5h/weekly",
+      "bezpośredni odczyt auth.json lub innych plików logowania",
+      "stary model stanu pi-orchestrator",
+      "bezpośredni odczyt aktywnej SQLite przez dashboard"
+    ]
+  },
+  "architecture_rules": [
+    "Dashboard pozostaje cienkim klientem daemon IPC.",
+    "Źródłem usage są istniejące AgentReport.usage zapisane w reports oraz eventy wykonania.",
+    "Nie dodawaj nowej tabeli usage, jeśli metryki można deterministycznie wyliczyć z istniejących raportów.",
+    "Nie wymyślaj kosztu. estimatedCost pokazuj tylko, gdy provider lub Pi faktycznie go raportuje.",
+    "cachedTokens są metryką pomocniczą i nie są ponownie dodawane do totalTokens.",
+    "TaskView ma pokazywać efektywny runtime provider/model/reasoning, a nie tylko wartości deklarowane w wejściowym modelPolicy.",
+    "Brak usage musi być bezpiecznie reprezentowany jako unknown/--, nie jako fałszywe zero na poziomie pojedynczego tasku.",
+    "Nie modyfikuj Pi core."
+  ],
+  "dashboard_design": {
+    "header": [
+      "PI MANY AGENTS",
+      "daemon ONLINE/OFFLINE + PID",
+      "active runs",
+      "active workers",
+      "global tokens: input / output / total",
+      "estimated cost tylko jeśli znany",
+      "czas ostatniego refresh"
+    ],
+    "panels": {
+      "runs": [
+        "run id",
+        "state",
+        "progress completed/taskCount",
+        "running/failed/queued",
+        "elapsed",
+        "total tokens",
+        "cost jeśli znany"
+      ],
+      "tasks_workers": [
+        "task id",
+        "title",
+        "state",
+        "provider",
+        "model",
+        "reasoning",
+        "tokens",
+        "duration",
+        "attempts"
+      ],
+      "usage": [
+        "inputTokens",
+        "outputTokens",
+        "cachedTokens",
+        "totalTokens = inputTokens + outputTokens",
+        "estimatedCost",
+        "breakdown per provider/model",
+        "selected-run usage domyślnie, global usage po przełączeniu"
+      ],
+      "providers": [
+        "provider",
+        "default/discovered model",
+        "status",
+        "local/remote",
+        "token usage reporting capability"
+      ],
+      "live_activity": [
+        "timestamp",
+        "task id",
+        "worker id",
+        "event",
+        "krótki komunikat",
+        "scrollowalny viewport ze wskaźnikiem LIVE"
+      ]
+    },
+    "responsive": {
+      "80x24": "kompaktowy układ pionowy: header, RUNS, TASKS, skrócony USAGE/LIVE, footer",
+      "140x40": "dwukolumnowy control room: RUNS+TASKS po lewej, USAGE+PROVIDERS+LIVE po prawej",
+      "very_small_terminal": "graceful degradation bez ujemnych szerokości i bez crashy"
+    },
+    "terminal_safety": [
+      "wejście do alternate screen: \\x1b[?1049h",
+      "ukrycie kursora podczas TUI: \\x1b[?25l",
+      "na KAŻDEJ ścieżce stop/error/signal przywróć kursor i normalny bufor: \\x1b[?25h\\x1b[?1049l",
+      "sanityzuj treści pochodzące od modeli i użytkownika przed dodaniem własnego ANSI",
+      "padding/truncation musi liczyć visible width, a nie długość stringa z kodami ANSI",
+      "nie pozwól, aby tekst eventu wstrzyknął sekwencję sterującą terminalem"
+    ],
+    "keyboard": [
+      "zachowaj: up/k, down/j, Enter, r, n, a, x, q",
+      "u - toggle usage scope selected run / global",
+      "PageUp/PageDown lub [/] - scroll live activity",
+      "footer pokazuje tylko skróty istotne w aktualnym trybie"
+    ]
+  },
+  "data_contract": {
+    "UsageSummary": {
+      "inputTokens": "number",
+      "outputTokens": "number",
+      "cachedTokens": "number",
+      "totalTokens": "number",
+      "estimatedCost": "number | undefined",
+      "costKnown": "boolean",
+      "reportsWithUsage": "number",
+      "reportsTotal": "number"
+    },
+    "ProviderUsageSummary": {
+      "provider": "string",
+      "model": "string | undefined",
+      "inputTokens": "number",
+      "outputTokens": "number",
+      "cachedTokens": "number",
+      "totalTokens": "number",
+      "estimatedCost": "number | undefined",
+      "reportsWithUsage": "number",
+      "reportsTotal": "number"
+    },
+    "RunSummary_extensions": [
+      "usage?: UsageSummary",
+      "elapsedMs?: number",
+      "activeWorkers?: number"
+    ],
+    "TaskView_extensions": [
+      "usage?: UsageSummary lub zwięzły TaskUsage",
+      "provider/model/reasoning mają odzwierciedlać ExecutionPlan",
+      "durationMs z AgentReport.durationMs",
+      "attempts z task.progress retry events albo deterministycznego stanu wykonania"
+    ],
+    "DashboardSnapshot_extensions": [
+      "usage: global UsageSummary",
+      "providerUsage: ProviderUsageSummary[]"
+    ],
+    "sources": [
+      "reports JSON -> AgentReport.usage + durationMs",
+      "task.started event payload.plan -> effective model/reasoning/provider",
+      "worker.started event -> provider/model/workerId",
+      "task.progress -> attempts/retry",
+      "AgentTask.modelPolicy -> fallback tylko jeśli brak runtime eventu"
+    ],
+    "semantics": [
+      "totalTokens = inputTokens + outputTokens",
+      "cachedTokens pokazuj osobno, nie dodawaj drugi raz do totalTokens",
+      "estimatedCost sumuj wyłącznie z raportów, które podały wartość",
+      "jeżeli tylko część raportów ma koszt, pokaż wartość wraz z coverage zamiast udawać pełny koszt",
+      "jeżeli raport nie ma usage, task pokazuje --, agregat zachowuje reportsWithUsage/reportsTotal"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "dashboard-audit-current",
+      "title": "Audit Stage 5 dashboard data flow",
+      "type": "inspect",
+      "priority": 3,
+      "dependencies": [],
+      "objective": "Prześledź Store -> DaemonServer -> DashboardSnapshot/RunDetails -> reducer -> renderer. Wskaż dokładnie, gdzie usage, runtime plan i worker metadata są już dostępne, a gdzie są tracone.",
+      "relevantFiles": [
+        "src/types.ts",
+        "src/core/orchestrator.ts",
+        "src/daemon/store.ts",
+        "src/daemon/server.ts",
+        "src/dashboard/state.ts",
+        "src/dashboard/render.ts",
+        "src/dashboard/app.ts",
+        "test/dashboard.test.ts"
+      ],
+      "expectedOutput": "Krótka mapa przepływu danych i lista minimalnych zmian bez implementacji.",
+      "modelPolicy": {
+        "reasoning": "low",
+        "timeoutMs": 120000
+      },
+      "permissions": {
+        "read": true,
+        "write": false,
+        "shell": false,
+        "network": false,
+        "git": false
+      }
+    },
+    {
+      "id": "dashboard-donor-analysis",
+      "title": "Extract reusable dashboard patterns from pi-orchestrator",
+      "type": "research",
+      "priority": 2,
+      "dependencies": [],
+      "objective": "Porównaj aktualny dashboard z pi-orchestrator. Przenieś tylko sprawdzone wzorce UX i lifecycle: hierarchy, token counters, model/thinking visibility, live feed, alternate screen. Nie kopiuj quota/auth architecture.",
+      "relevantFiles": [
+        "src/dashboard/render.ts",
+        "src/dashboard/app.ts"
+      ],
+      "constraints": [
+        "Donor to wzorzec funkcjonalny, nie zależność runtime.",
+        "Nie kopiuj provider-specific quota logic.",
+        "Nie dodawaj chalk/pi-tui, jeśli prosty lokalny helper wystarczy."
+      ],
+      "expectedOutput": "Lista wzorców do implementacji i elementów odrzuconych z uzasadnieniem.",
+      "modelPolicy": {
+        "reasoning": "low",
+        "timeoutMs": 120000
+      },
+      "permissions": {
+        "read": true,
+        "write": false,
+        "shell": false,
+        "network": true,
+        "git": false
+      }
+    },
+    {
+      "id": "usage-contract-tests",
+      "title": "Write failing usage aggregation tests",
+      "type": "test",
+      "priority": 4,
+      "dependencies": [
+        "dashboard-audit-current"
+      ],
+      "objective": "Najpierw napisz testy RED dla provider-neutral usage aggregation. Testy muszą obejmować pełne usage, brak usage, częściowo znany cost, cachedTokens, per-run i per-provider totals oraz totalTokens=input+output.",
+      "relevantFiles": [
+        "src/daemon/store.ts",
+        "src/daemon/server.ts",
+        "src/types.ts",
+        "test/dashboard.test.ts",
+        "test/daemon.test.ts"
+      ],
+      "writeScope": [
+        "test"
+      ],
+      "constraints": [
+        "TDD: nie implementuj produkcyjnego kodu w tym zadaniu.",
+        "Testy nie wymagają prawdziwego Pi/Ollama/Docker.",
+        "Sprawdź, że nowe testy faktycznie failują z powodu brakującej funkcji."
+      ],
+      "expectedOutput": "Commit tylko z testami RED i raportem oczekiwanych failure.",
+      "modelPolicy": {
+        "reasoning": "medium",
+        "timeoutMs": 180000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "usage-data-implementation",
+      "title": "Implement dashboard observability DTOs and aggregation",
+      "type": "code",
+      "priority": 4,
+      "dependencies": [
+        "usage-contract-tests"
+      ],
+      "objective": "Zaimplementuj minimalny kod potrzebny do przejścia testów usage. Agreguj AgentReport.usage w Store/Daemon, wzbogacaj TaskView danymi z raportów i runtime events, rozszerz DashboardSnapshot i RunSummary bez nowej tabeli usage.",
+      "relevantFiles": [
+        "src/types.ts",
+        "src/daemon/store.ts",
+        "src/daemon/server.ts",
+        "src/protocol/ipc.ts",
+        "test/dashboard.test.ts",
+        "test/daemon.test.ts"
+      ],
+      "writeScope": [
+        "src/types.ts",
+        "src/daemon",
+        "src/protocol",
+        "test"
+      ],
+      "constraints": [
+        "Nie czytaj SQLite bezpośrednio z dashboardu.",
+        "Nie dodawaj fałszywego cennika modeli.",
+        "Nie licz cachedTokens drugi raz w totalTokens.",
+        "Zachowaj kompatybilność starszych raportów bez usage."
+      ],
+      "expectedOutput": "GREEN dla usage tests i istniejących testów daemon/dashboard.",
+      "modelPolicy": {
+        "reasoning": "high",
+        "timeoutMs": 360000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "dashboard-render-tests",
+      "title": "Write failing control-room renderer tests",
+      "type": "test",
+      "priority": 4,
+      "dependencies": [
+        "usage-data-implementation",
+        "dashboard-donor-analysis"
+      ],
+      "objective": "Dodaj testy RED dla nowego dashboardu: usage summary, provider/model/reasoning, run progress, partial cost coverage, 80x24, 140x40, tiny terminal, ANSI injection, alternate-screen lifecycle oraz usage scope toggle.",
+      "relevantFiles": [
+        "src/dashboard/render.ts",
+        "src/dashboard/state.ts",
+        "src/dashboard/input.ts",
+        "src/dashboard/app.ts",
+        "test/dashboard.test.ts"
+      ],
+      "writeScope": [
+        "test"
+      ],
+      "constraints": [
+        "Testuj realny tekst renderera i reducer/input, nie mock implementacji.",
+        "Test alternate-screen może używać wstrzykniętego/spy output streamu bez prawdziwego GUI.",
+        "Nie implementuj produkcyjnego kodu w tym zadaniu."
+      ],
+      "expectedOutput": "Commit z kontrolowanymi failing tests.",
+      "modelPolicy": {
+        "reasoning": "medium",
+        "timeoutMs": 180000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "dashboard-control-room-implementation",
+      "title": "Implement Stage 6 control-room TUI",
+      "type": "code",
+      "priority": 5,
+      "dependencies": [
+        "dashboard-render-tests"
+      ],
+      "objective": "Przebuduj renderer/state/app/input tak, aby dashboard realizował spec Stage 6. Zachowaj admin run/abort i reconnect. Dodaj alternate screen lifecycle, usage panel, model/reasoning, progress, live viewport i responsive layout.",
+      "relevantFiles": [
+        "src/dashboard/app.ts",
+        "src/dashboard/render.ts",
+        "src/dashboard/state.ts",
+        "src/dashboard/input.ts",
+        "src/dashboard/client.ts",
+        "test/dashboard.test.ts",
+        "test/dashboard-launcher.test.ts"
+      ],
+      "writeScope": [
+        "src/dashboard",
+        "test"
+      ],
+      "constraints": [
+        "Zero web UI i Electron.",
+        "Nie zatrzymuj daemona przy wyjściu z TUI.",
+        "Nie zmieniaj IPC w sposób niekompatybilny.",
+        "Własny ANSI może kolorować statusy, ale treści zewnętrzne muszą być zsanityzowane.",
+        "Nie dodawaj ciężkiej biblioteki UI tylko dla kolorów/paddingu."
+      ],
+      "expectedOutput": "Nowy czytelny dashboard z GREEN renderer/lifecycle tests i zachowanymi funkcjami Stage 5.",
+      "modelPolicy": {
+        "reasoning": "high",
+        "timeoutMs": 420000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "dashboard-docs-and-review",
+      "title": "Document and review Stage 6",
+      "type": "review",
+      "priority": 3,
+      "dependencies": [
+        "dashboard-control-room-implementation"
+      ],
+      "objective": "Zaktualizuj README i ADR. Sprawdź semantykę tokenów, missing data, cost coverage, terminal restore, reconnect, abort controls, lokalne providery i czytelność 80x24/140x40.",
+      "relevantFiles": [
+        "README.md",
+        "docs/decisions",
+        "src/dashboard",
+        "src/daemon",
+        "src/providers"
+      ],
+      "writeScope": [
+        "README.md",
+        "docs"
+      ],
+      "expectedOutput": "Dokumentacja i lista znalezionych/poprawionych problemów.",
+      "modelPolicy": {
+        "reasoning": "medium",
+        "timeoutMs": 180000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "verify-stage-6",
+      "title": "Run complete Stage 6 verification",
+      "type": "test",
+      "priority": 5,
+      "dependencies": [
+        "dashboard-docs-and-review"
+      ],
+      "objective": "Uruchom pełne bramki jakości i podaj surowe wyniki. Wykonaj npm test, npm run typecheck, npm run lint, npm run demo. Jeśli dostępny jest TTY, wykonaj smoke dashboard --inline i sprawdź przywrócenie terminala. Jeśli manualnego TTY nie ma, oznacz wyłącznie ten punkt NOT VERIFIED.",
+      "relevantFiles": [
+        "package.json",
+        "test",
+        "src/dashboard"
+      ],
+      "constraints": [
+        "Nie raportuj PASS bez świeżego outputu.",
+        "Każdy istniejący failure wypisz jawnie.",
+        "Nie zmieniaj testów tylko po to, żeby ukryć regresję."
+      ],
+      "expectedOutput": "Końcowy AgentReport z wynikami wszystkich komend, liczbą testów i ograniczeniami.",
+      "modelPolicy": {
+        "reasoning": "low",
+        "timeoutMs": 600000
+      },
+      "permissions": {
+        "read": true,
+        "write": false,
+        "shell": true,
+        "network": false,
+        "git": false
+      }
+    }
+  ],
+  "acceptance_criteria": [
+    "Dashboard pokazuje globalne i per-run input/output/total tokens.",
+    "Każdy task pokazuje efektywny provider/model/reasoning, jeśli runtime te dane dostarczył.",
+    "RUNS pokazuje postęp oraz usage bez dodatkowego model call.",
+    "Brak usage/cost nie jest prezentowany jako prawdziwe zero.",
+    "Pi, Ollama Qwen4 i Docker Mistral korzystają z jednego kontraktu Usage.",
+    "Layout pozostaje używalny w 80x24 i 140x40.",
+    "Treści modelu nie mogą wstrzykiwać ANSI.",
+    "Dashboard używa alternate screen i zawsze przywraca terminal.",
+    "Dashboard pozostaje klientem IPC i nie czyta aktywnej SQLite bezpośrednio.",
+    "Nie ma regresji new-run, abort selected, abort all i reconnect.",
+    "npm test, npm run typecheck, npm run lint i npm run demo mają świeży wynik w raporcie końcowym."
+  ]
+}
