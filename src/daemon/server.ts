@@ -3,6 +3,7 @@ import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { createOrchestrator, loadConfig } from "../index.ts";
+import type { ManyAgentsConfig } from "../config/config.ts";
 import type { AgentTask, ProtocolMessage, RunOptions, RunResult } from "../types.ts";
 import { createStore, type Store } from "./store.ts";
 import type {
@@ -30,6 +31,7 @@ export interface DaemonOptions {
   socketPath?: string;
   dbPath?: string;
   pidPath?: string;
+  config?: ManyAgentsConfig;
 }
 
 interface ActiveRun {
@@ -46,6 +48,7 @@ export class DaemonServer {
   private readonly socketPath: string;
   private readonly dbPath: string;
   private readonly pidPath: string;
+  private readonly customConfig?: ManyAgentsConfig;
   private running = false;
   private shuttingDown = false;
 
@@ -53,6 +56,7 @@ export class DaemonServer {
     this.socketPath = options.socketPath ?? DEFAULT_SOCKET_PATH;
     this.dbPath = options.dbPath ?? DEFAULT_DB_PATH;
     this.pidPath = options.pidPath ?? DEFAULT_PID_PATH;
+    this.customConfig = options.config;
     this.store = createStore(this.dbPath);
   }
 
@@ -229,7 +233,7 @@ export class DaemonServer {
           this.store.upsertTask(requestId, task, "queued");
         }
 
-        const config = await loadConfig();
+        const config = this.customConfig ?? (await loadConfig());
         const orchestrator = createOrchestrator(config, abortController.signal);
 
         const unsubscribe = orchestrator.bus.onEvent((event: ProtocolMessage) => {
@@ -349,12 +353,11 @@ export class DaemonServer {
   }
 
   private buildProvidersStatus(): ProviderStatus[] {
-    // Registered providers from Stage 4 config; no network calls or model exec
+    // Registered providers from config; no network calls or model exec
     return [
-      { name: "fake", model: "fake", status: "registered" },
       { name: "pi", model: "pi", status: "registered" },
-      { name: "qwen4", model: "qwen2.5-coder:7b", status: "registered" },
-      { name: "mistral", model: "mistral", status: "registered" },
+      { name: "qwen4", model: "qwen4", status: "registered" },
+      { name: "mistral", model: "ai/mistral", status: "registered" },
     ];
   }
 

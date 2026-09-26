@@ -12,6 +12,7 @@ import { DEFAULT_CONFIG } from "../src/config/config.ts";
 import { routeTask } from "../src/routing/rules.ts";
 import { createOrchestrator, loadConfig } from "../src/index.ts";
 import type { AgentTask } from "../src/types.ts";
+import { MockProvider } from "./helpers/mock-provider.ts";
 
 function task(partial: Partial<AgentTask> & Pick<AgentTask, "id" | "title" | "objective">): AgentTask {
   return createTask({
@@ -33,7 +34,7 @@ test("catalog matches verified Pi providers", () => {
 
 test("model vendor is not the runtime provider", () => {
   const plan = routeTask(task({ id: "m", title: "m", objective: "m", modelPolicy: { reasoning: "low", provider: "google", model: "gemini" } }), DEFAULT_CONFIG);
-  assert.equal(plan.provider, "fake");
+  assert.equal(plan.provider, "pi");
   assert.equal(plan.modelProvider, "google");
   assert.equal(plan.model, "gemini");
 });
@@ -61,13 +62,14 @@ test("retries a retryable failure then reports failed", async () => {
   const dir = await mkdtemp(join(tmpdir(), "many-retry-"));
   const config = await loadConfig(join(dir, "missing.json"));
   const orchestrator = createOrchestrator({ ...config, maxRetries: 1 });
+  orchestrator.registerProvider(new MockProvider());
   let progress = 0;
   orchestrator.bus.onEvent((event) => {
     if (event.type === "task.progress") progress += 1;
   });
   const result = await orchestrator.run([
     task({ id: "f", title: "fail", objective: "fail", context: "fail" }),
-  ], { provider: "fake", maxRetries: 1, telemetryPath: join(dir, "t.jsonl") });
+  ], { provider: "mock", maxRetries: 1, telemetryPath: join(dir, "t.jsonl") });
   assert.equal(progress, 1);
   assert.equal(result.reports[0]?.status, "failed");
   assert.match(result.statusText, /healthy=true/);
@@ -77,10 +79,11 @@ test("cancels a queued dependent without running it", async () => {
   const dir = await mkdtemp(join(tmpdir(), "many-cancel-"));
   const config = await loadConfig(join(dir, "missing.json"));
   const orchestrator = createOrchestrator(config);
+  orchestrator.registerProvider(new MockProvider());
   const pending = orchestrator.run([
     task({ id: "slow", title: "slow", objective: "slow", context: "ok", modelPolicy: { reasoning: "none", maxTokens: 250, timeoutMs: 2000 } }),
     task({ id: "later", title: "later", objective: "later" }),
-  ], { provider: "fake", maxConcurrentWorkers: 1, maxRetries: 0, telemetryPath: join(dir, "t.jsonl") });
+  ], { provider: "mock", maxConcurrentWorkers: 1, maxRetries: 0, telemetryPath: join(dir, "t.jsonl") });
   await orchestrator.cancelTask("later");
   const result = await pending;
   const later = result.reports.find((report) => report.taskId === "later");

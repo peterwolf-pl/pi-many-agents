@@ -1,20 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { connect } from "node:net";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaemonServer } from "../src/daemon/server.ts";
+import { DEFAULT_CONFIG } from "../src/config/config.ts";
 import { JsonLineDecoder, encodeIpcMessage, type IpcResponse } from "../src/protocol/ipc.ts";
 import type { RunResult } from "../src/types.ts";
 
-test("P4: fresh directory daemon start -> run fake -> result -> shutdown", async () => {
+test("P4: fresh directory daemon start -> run pi stub -> result -> shutdown", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-daemon-test-"));
   const socketPath = join(dir, "daemon.sock");
   const dbPath = join(dir, "state.db");
   const pidPath = join(dir, "daemon.pid");
+  const mockPiPath = join(process.cwd(), "test/fixtures/mock-pi.js");
+  await writeFile(join(dir, ".pi-many-agents.json"), JSON.stringify({ piBinary: mockPiPath, defaultProvider: "pi" }));
 
-  const server = new DaemonServer({ socketPath, dbPath, pidPath });
+  const server = new DaemonServer({
+    socketPath,
+    dbPath,
+    pidPath,
+    config: { ...DEFAULT_CONFIG, piBinary: mockPiPath, defaultProvider: "pi" },
+  });
   await server.start();
 
   try {
@@ -49,7 +57,7 @@ test("P4: fresh directory daemon start -> run fake -> result -> shutdown", async
               type: "inspect",
             },
           ],
-          options: { provider: "fake" },
+          options: { provider: "pi" },
         })
       );
     });
@@ -107,8 +115,15 @@ test("P4: abort run A then run B succeeds", async () => {
   const socketPath = join(dir, "daemon.sock");
   const dbPath = join(dir, "state.db");
   const pidPath = join(dir, "daemon.pid");
+  const mockPiPath = join(process.cwd(), "test/fixtures/mock-pi.js");
+  await writeFile(join(dir, ".pi-many-agents.json"), JSON.stringify({ piBinary: mockPiPath, defaultProvider: "pi" }));
 
-  const server = new DaemonServer({ socketPath, dbPath, pidPath });
+  const server = new DaemonServer({
+    socketPath,
+    dbPath,
+    pidPath,
+    config: { ...DEFAULT_CONFIG, piBinary: mockPiPath, defaultProvider: "pi" },
+  });
   await server.start();
 
   try {
@@ -146,7 +161,7 @@ test("P4: abort run A then run B succeeds", async () => {
             context: "sleep:500",
           },
         ],
-        options: { provider: "fake" },
+        options: { provider: "pi" },
       })
     );
 
@@ -181,7 +196,7 @@ test("P4: abort run A then run B succeeds", async () => {
               type: "inspect",
             },
           ],
-          options: { provider: "fake" },
+          options: { provider: "pi" },
         })
       );
     });

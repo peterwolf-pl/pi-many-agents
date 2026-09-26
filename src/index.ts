@@ -1,6 +1,5 @@
 import { loadConfig, type ManyAgentsConfig } from "./config/config.ts";
 import { Orchestrator } from "./core/orchestrator.ts";
-import { FakeProvider } from "./providers/fake.ts";
 import { PiProvider } from "./providers/pi.ts";
 import { listPiProviders, PI_WORKER_PROFILES, PiProfileProvider } from "./providers/catalog.ts";
 import { DockerMistralProvider } from "./providers/docker-mistral.ts";
@@ -18,7 +17,6 @@ export { routeTask } from "./routing/rules.ts";
 
 export function createOrchestrator(config: ManyAgentsConfig, signal?: AbortSignal): Orchestrator {
   const orchestrator = new Orchestrator(config);
-  orchestrator.registerProvider(new FakeProvider(signal));
   orchestrator.registerProvider(
     new DockerMistralProvider({
       baseUrl: config.mistral?.baseUrl,

@@ -1,5 +1,5 @@
-import { createMessage, encodeMessage } from "../protocol/messages.ts";
-import type { AgentTask } from "../types.ts";
+import { createMessage, encodeMessage } from "../../src/protocol/messages.ts";
+import type { AgentTask } from "../../src/types.ts";
 
 const raw = process.argv[2];
 if (!raw) {

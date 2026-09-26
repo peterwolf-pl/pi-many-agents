@@ -15,7 +15,7 @@ import { DEFAULT_SOCKET_PATH } from "../daemon/server.ts";
 async function main(): Promise<void> {
   const [command = "help", ...rest] = process.argv.slice(2);
   if (command === "help" || command === "--help") {
-    process.stdout.write(`pi-many-agents run --plan <file> [--provider fake|pi|qwen4|mistral|...] [--concurrency N] [--retries N]
+    process.stdout.write(`pi-many-agents run --plan <file> [--provider pi|qwen4|mistral|...] [--concurrency N] [--retries N]
 pi-many-agents doctor
 pi-many-agents decompose <markdown> [--integrate]
 pi-many-agents graph --plan <file>
@@ -93,12 +93,14 @@ pi-many-agents dashboard [--inline] [--new-window]
 }
 
 async function runDemo(): Promise<void> {
+  const { loadConfig } = await import("../config/config.ts");
+  const config = await loadConfig();
   const tasks = [
     createTask({ id: "A", title: "analyze scheduler", objective: "Analyze scheduler implementation.", type: "inspect", priority: 1, modelPolicy: { reasoning: "low", maxTokens: 40 }, permissions: { read: true, write: false, shell: false } }),
     createTask({ id: "B", title: "analyze provider", objective: "Analyze provider abstraction.", type: "review", priority: 1, modelPolicy: { reasoning: "low", maxTokens: 40 }, permissions: { read: true, write: false, shell: false } }),
     createTask({ id: "C", title: "propose tests", objective: "Analyze tests and propose missing coverage.", type: "test", priority: 0, dependencies: ["A"], modelPolicy: { reasoning: "low", maxTokens: 20 }, permissions: { read: true, write: false, shell: false } }),
   ];
-  const result = await runTasks(tasks, { provider: "fake", maxConcurrentWorkers: 2, telemetryPath: ".pi-many-agents/demo-telemetry.jsonl" });
+  const result = await runTasks(tasks, { provider: config.defaultProvider, maxConcurrentWorkers: 2, telemetryPath: ".pi-many-agents/demo-telemetry.jsonl" });
   process.stdout.write(`${result.statusText}\n`);
   process.stdout.write(`${JSON.stringify(result.reports.map((report) => ({ taskId: report.taskId, status: report.status, summary: report.summary })), null, 2)}\n`);
 }
@@ -108,19 +110,14 @@ async function runDoctor(): Promise<void> {
   const { DockerMistralProvider } = await import("../providers/docker-mistral.ts");
   const { OllamaProvider } = await import("../providers/ollama.ts");
   const { PiProvider } = await import("../providers/pi.ts");
-  const { FakeProvider } = await import("../providers/fake.ts");
 
   const config = await loadConfig();
 
-  const fake = new FakeProvider();
   const pi = new PiProvider(config);
   const qwen4 = new OllamaProvider({ name: "qwen4", baseUrl: config.ollama?.baseUrl, model: config.ollama?.model });
   const mistral = new DockerMistralProvider({ baseUrl: config.mistral?.baseUrl, model: config.mistral?.model });
 
   process.stdout.write("pi-many-agents doctor\n\n");
-
-  const fakeAvail = await fake.available();
-  process.stdout.write(`- fake: ${fakeAvail ? "AVAILABLE" : "UNAVAILABLE"}\n`);
 
   const piAvail = await pi.available();
   process.stdout.write(`- pi (cli): ${piAvail ? "AVAILABLE" : "UNAVAILABLE"}\n`);

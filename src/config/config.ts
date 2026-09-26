@@ -41,8 +41,8 @@ export const DEFAULT_MISTRAL_CONFIG: DockerMistralConfig = {
 
 export const DEFAULT_CONFIG: ManyAgentsConfig = {
   maxConcurrentWorkers: 2,
-  defaultProvider: "fake",
-  defaultModel: "fake-deterministic",
+  defaultProvider: "pi",
+  defaultModel: "claude-sonnet-4-6",
   defaultTimeoutMs: 120_000,
   telemetryPath: ".pi-many-agents/telemetry.jsonl",
   piBinary: "pi",

@@ -115,7 +115,7 @@ export default function (pi: ExtensionAPI) {
               requestId,
               tasks,
               options: {
-                provider: parsedPlan.provider ?? "fake",
+                provider: parsedPlan.provider ?? "pi",
                 workspace: ctx.cwd,
                 maxConcurrentWorkers: parsedPlan.concurrency,
                 maxRetries: parsedPlan.maxRetries,

@@ -66,10 +66,10 @@ export class PiProvider implements AgentProvider {
     ];
     if (tools.length) args.push("--tools", tools.join(","));
     else args.push("--no-tools");
-    if (task.modelPolicy.provider && task.modelPolicy.provider !== "pi" && task.modelPolicy.provider !== "fake") {
+    if (task.modelPolicy.provider && task.modelPolicy.provider !== "pi") {
       args.push("--provider", task.modelPolicy.provider);
     }
-    if (effectiveModel && effectiveModel !== "fake-deterministic") {
+    if (effectiveModel) {
       args.push("--model", effectiveModel);
     }
     args.push("--", renderTaskPacket(task));

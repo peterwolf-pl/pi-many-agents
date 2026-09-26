@@ -1,6 +1,6 @@
 {
   "stage": 2,
-  "provider": "fake",
+  "provider": "pi",
   "notes": "First dogfood workload. Independent reviews can run in parallel. Integration tasks wait on reviews. Switch provider to pi only for semantic review tasks after a human accepts the cost.",
   "tasks": [
     {

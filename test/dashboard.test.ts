@@ -18,7 +18,7 @@ describe("dashboard state/reducer", () => {
       runs: [{ id: "r1", state: "running", createdAt: Date.now(), updatedAt: Date.now(), taskCount: 3, completed: 1, running: 1, failed: 0, queued: 1 }],
       activeRunCount: 1,
       taskCounts: { queued: 1, running: 1, completed: 1, failed: 0, cancelled: 0 },
-      providers: [{ name: "fake", model: "fake", status: "registered" }],
+      providers: [{ name: "pi", model: "pi", status: "registered" }],
       recentEvents: [],
     };
     const s0 = initialState();

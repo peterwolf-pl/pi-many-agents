@@ -3,18 +3,18 @@ import assert from "node:assert/strict";
 import { Orchestrator } from "../src/core/orchestrator.ts";
 import { createTask } from "../src/core/task.ts";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
-import { FakeProvider } from "../src/providers/fake.ts";
+import { MockProvider } from "./helpers/mock-provider.ts";
 
 test("P3: cancelling task A leaves task B running to completion", async () => {
   const orchestrator = new Orchestrator(DEFAULT_CONFIG);
-  orchestrator.registerProvider(new FakeProvider());
+  orchestrator.registerProvider(new MockProvider());
 
   const taskA = createTask({
     id: "task-A",
     title: "Task A slow",
     objective: "Slow task A",
     type: "inspect",
-    context: "sleep:200", // fake-worker supports sleep if context has sleep:ms or we simulate slow
+    context: "sleep:200", // mock-worker supports sleep if context has sleep:ms or we simulate slow
   });
 
   const taskB = createTask({
@@ -26,7 +26,7 @@ test("P3: cancelling task A leaves task B running to completion", async () => {
   });
 
   const runPromise = orchestrator.run([taskA, taskB], {
-    provider: "fake",
+    provider: "mock",
     maxConcurrentWorkers: 2,
     dedupe: false,
   });
@@ -49,7 +49,7 @@ test("P3: cancelling task A leaves task B running to completion", async () => {
 
 test("P3: pre-aborted run does not launch any workers", async () => {
   const orchestrator = new Orchestrator(DEFAULT_CONFIG);
-  orchestrator.registerProvider(new FakeProvider());
+  orchestrator.registerProvider(new MockProvider());
 
   const task = createTask({
     id: "task-1",
@@ -62,7 +62,7 @@ test("P3: pre-aborted run does not launch any workers", async () => {
   ac.abort(); // pre-aborted
 
   const result = await orchestrator.run([task], {
-    provider: "fake",
+    provider: "mock",
     signal: ac.signal,
   });
 
@@ -73,7 +73,7 @@ test("P3: pre-aborted run does not launch any workers", async () => {
 
 test("P3: second run does not inherit cancellations from first run", async () => {
   const orchestrator = new Orchestrator(DEFAULT_CONFIG);
-  orchestrator.registerProvider(new FakeProvider());
+  orchestrator.registerProvider(new MockProvider());
 
   const taskA = createTask({
     id: "task-reuse",
@@ -83,7 +83,7 @@ test("P3: second run does not inherit cancellations from first run", async () =>
     context: "sleep:200",
   });
 
-  const p1 = orchestrator.run([taskA], { provider: "fake" });
+  const p1 = orchestrator.run([taskA], { provider: "mock" });
   setTimeout(() => {
     orchestrator.cancelTask("task-reuse").catch(() => {});
   }, 20);
@@ -91,6 +91,6 @@ test("P3: second run does not inherit cancellations from first run", async () =>
   assert.equal(res1.reports[0].status, "partial");
 
   // Run 2 with the same taskId
-  const res2 = await orchestrator.run([taskA], { provider: "fake" });
+  const res2 = await orchestrator.run([taskA], { provider: "mock" });
   assert.equal(res2.reports[0].status, "completed", "Task in run 2 must not be cancelled from run 1");
 });

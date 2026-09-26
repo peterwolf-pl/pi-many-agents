@@ -71,7 +71,7 @@ test("P1: plan provider is preserved and precedence holds", () => {
   assert.equal(resolveProvider(undefined, undefined, "default"), "default");
 });
 
-test("P1: stub Pi binary confirms argv contains effective model and reasoning, ignores fake-deterministic", async () => {
+test("P1: stub Pi binary confirms argv contains effective model and reasoning", async () => {
   const { PiProvider } = await import("../src/providers/pi.ts");
   import("node:fs").then((fs) => {
     // We can test by running with a fake node script as the binary
@@ -118,20 +118,20 @@ process.exit(0);
     const modelIdx = loggedArgs.indexOf("--model");
     assert.equal(loggedArgs[modelIdx + 1], "my-custom-model");
 
-    // Now test with fake-deterministic: it should NOT pass --model fake-deterministic
-    const taskFakeModel = createTask({
+    // Now test with another model: it should pass --model other-model
+    const taskOtherModel = createTask({
       id: "t-stub-2",
-      title: "test stub fake",
-      objective: "verify argv ignores fake-deterministic",
+      title: "test stub other",
+      objective: "verify argv passes other-model",
       type: "inspect",
       modelPolicy: {
-        model: "fake-deterministic",
+        model: "other-model",
         reasoning: "low",
       },
     });
-    await provider.execute(handle, taskFakeModel);
+    await provider.execute(handle, taskOtherModel);
     const loggedArgs2 = JSON.parse(readFileSync(logFile, "utf8")) as string[];
-    assert.ok(!loggedArgs2.includes("fake-deterministic"), "should NOT pass fake-deterministic to Pi");
+    assert.ok(loggedArgs2.includes("other-model"), "should pass other-model to Pi");
   } finally {
     if (existsSync(tempScript)) unlinkSync(tempScript);
     if (existsSync(logFile)) unlinkSync(logFile);

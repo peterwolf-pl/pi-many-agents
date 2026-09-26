@@ -9,6 +9,15 @@ import { createOrchestrator, loadConfig } from "../src/index.ts";
 import { parseReportPayload, wrapTextReport } from "../src/protocol/report.ts";
 import { parseMessageLine } from "../src/protocol/messages.ts";
 import type { AgentTask } from "../src/types.ts";
+import type { ManyAgentsConfig } from "../src/config/config.ts";
+import { MockProvider } from "./helpers/mock-provider.ts";
+import type { Orchestrator } from "../src/core/orchestrator.ts";
+
+function getOrchestrator(config: ManyAgentsConfig, signal?: AbortSignal): Orchestrator {
+  const orchestrator = createOrchestrator(config, signal);
+  orchestrator.registerProvider(new MockProvider("mock", signal));
+  return orchestrator;
+}
 
 function task(partial: Partial<AgentTask> & Pick<AgentTask, "id" | "title">): AgentTask {
   return createTask({
@@ -52,7 +61,7 @@ test("runs independent workers concurrently and survives failure", async () => {
   const dir = await mkdtemp(join(tmpdir(), "many-"));
   const telemetry = join(dir, "telemetry.jsonl");
   const config = await loadConfig(join(dir, "missing.json"));
-  const orchestrator = createOrchestrator(config);
+  const orchestrator = getOrchestrator(config);
   const started: Array<{ id: string; at: number }> = [];
   orchestrator.bus.onEvent((event) => {
     if (event.type === "task.started" && event.taskId) started.push({ id: event.taskId, at: Date.now() });
@@ -61,7 +70,7 @@ test("runs independent workers concurrently and survives failure", async () => {
     task({ id: "A", title: "scheduler", context: "ok", modelPolicy: { reasoning: "none", maxTokens: 80, timeoutMs: 2000 } }),
     task({ id: "B", title: "provider", context: "fail", modelPolicy: { reasoning: "none", maxTokens: 80, timeoutMs: 2000 } }),
     task({ id: "C", title: "tests", dependencies: ["A"], context: "ok", modelPolicy: { reasoning: "none", maxTokens: 20, timeoutMs: 2000 } }),
-  ], { provider: "fake", maxConcurrentWorkers: 2, telemetryPath: telemetry });
+  ], { provider: "mock", maxConcurrentWorkers: 2, telemetryPath: telemetry });
   assert.equal(result.reports.length, 3);
   assert.equal(result.reports.find((report) => report.taskId === "B")?.status, "failed");
   assert.equal(result.reports.find((report) => report.taskId === "A")?.status, "completed");
@@ -76,7 +85,7 @@ test("runs independent workers concurrently and survives failure", async () => {
 
 test("enforces max concurrency", async () => {
   const config = await loadConfig("/tmp/does-not-exist-many.json");
-  const orchestrator = createOrchestrator(config);
+  const orchestrator = getOrchestrator(config);
   let running = 0;
   let max = 0;
   orchestrator.bus.onEvent((event) => {
@@ -90,35 +99,35 @@ test("enforces max concurrency", async () => {
     task({ id: "1", title: "one", modelPolicy: { reasoning: "none", maxTokens: 60, timeoutMs: 2000 } }),
     task({ id: "2", title: "two", modelPolicy: { reasoning: "none", maxTokens: 60, timeoutMs: 2000 } }),
     task({ id: "3", title: "three", modelPolicy: { reasoning: "none", maxTokens: 60, timeoutMs: 2000 } }),
-  ], { provider: "fake", maxConcurrentWorkers: 1, telemetryPath: join(tmpdir(), `many-${Date.now()}.jsonl`) });
+  ], { provider: "mock", maxConcurrentWorkers: 1, telemetryPath: join(tmpdir(), `many-${Date.now()}.jsonl`) });
   assert.equal(max, 1);
 });
 
 test("handles timeout, cancellation, malformed output, and provider failure", async () => {
   const dir = await mkdtemp(join(tmpdir(), "many-edge-"));
   const config = await loadConfig(join(dir, "nope.json"));
-  const timeoutRun = await createOrchestrator(config).run([
+  const timeoutRun = await getOrchestrator(config).run([
     task({ id: "hang", title: "hang", context: "hang", modelPolicy: { reasoning: "none", timeoutMs: 200 } }),
-  ], { provider: "fake", telemetryPath: join(dir, "timeout.jsonl") });
+  ], { provider: "mock", telemetryPath: join(dir, "timeout.jsonl") });
   assert.equal(timeoutRun.reports[0]?.status, "failed");
   assert.match(timeoutRun.reports[0]?.error ?? "", /timeout/);
 
-  const malformed = await createOrchestrator(config).run([
+  const malformed = await getOrchestrator(config).run([
     task({ id: "bad", title: "bad", context: "malformed" }),
-  ], { provider: "fake", telemetryPath: join(dir, "bad.jsonl") });
+  ], { provider: "mock", telemetryPath: join(dir, "bad.jsonl") });
   assert.equal(malformed.reports[0]?.status, "failed");
   assert.match(malformed.reports[0]?.error ?? "", /malformed/);
 
   const controller = new AbortController();
-  const pending = createOrchestrator(config, controller.signal).run([
+  const pending = getOrchestrator(config, controller.signal).run([
     task({ id: "slow", title: "slow", context: "hang", modelPolicy: { reasoning: "none", timeoutMs: 5000 } }),
-  ], { provider: "fake", signal: controller.signal, telemetryPath: join(dir, "cancel.jsonl") });
+  ], { provider: "mock", signal: controller.signal, telemetryPath: join(dir, "cancel.jsonl") });
   setTimeout(() => controller.abort(), 50);
   const cancelled = await pending;
   assert.ok(cancelled.reports[0]);
   assert.notEqual(cancelled.reports[0]?.status, "completed");
 
-  const missing = await createOrchestrator(config).run([
+  const missing = await getOrchestrator(config).run([
     task({ id: "x", title: "x" }),
   ], { provider: "missing", telemetryPath: join(dir, "missing.jsonl") });
   assert.equal(missing.reports[0]?.status, "failed");

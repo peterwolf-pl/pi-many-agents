@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { dedupeTasks } from "../src/core/dedup.ts";
 import { createTask, assertAcyclic } from "../src/core/task.ts";
 import { Orchestrator } from "../src/core/orchestrator.ts";
-import { FakeProvider } from "../src/providers/fake.ts";
+import { MockProvider } from "./helpers/mock-provider.ts";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
 
 test("P6: dedup rewrites dependencies so C -> B becomes C -> A without missing dependency error", () => {
@@ -70,7 +70,7 @@ test("P6: tasks with different workspace or context are NOT deduplicated", () =>
 
 test("P6: dependency reports are passed into dependent task context", async () => {
   const orchestrator = new Orchestrator(DEFAULT_CONFIG);
-  orchestrator.registerProvider(new FakeProvider());
+  orchestrator.registerProvider(new MockProvider());
 
   const taskA = createTask({
     id: "dep-A",
@@ -88,7 +88,7 @@ test("P6: dependency reports are passed into dependent task context", async () =
   });
 
   const result = await orchestrator.run([taskA, taskB], {
-    provider: "fake",
+    provider: "mock",
     maxConcurrentWorkers: 1,
   });
 

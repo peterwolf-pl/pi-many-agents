@@ -14,7 +14,7 @@ Stan wdrożony po etapie **Stage 3A**:
 | --- | --- |
 | Kolejka zadań | Priorytety, zależności, graf DAG, limit równoległości i walidacja liczb |
 | Obsługa błędów | Timeout, retry, priorytet błędu procesu nad `completed`, ochrona bufora |
-| Dostawcy | Fake, proces Pi, profile Pi, Ollama, Mistral; per-worker AbortController |
+| Dostawcy | Proces Pi, profile Pi, Ollama (Qwen4), Docker Model Runner (Mistral); per-worker AbortController |
 | Raporty | `AgentReport` z zagnieżdżonymi `changes`, przekazywanie wyników do zależności |
 | Dekompozycja | Deterministyczny podział Markdown według nagłówków i list |
 | Deduplikacja | Semantyczny fingerprint (workspace, context, constraints, perms) + aliasy |
@@ -44,12 +44,12 @@ npm run lint
 npm run demo
 ```
 
-Demo korzysta z providera `fake`. Weryfikuje uruchamianie procesów, kolejkę i raportowanie. Nie wykonuje analizy kodu przez LLM i nie wymaga płatnego API.
+Demo uruchamia przykładowe zadania z użyciem skonfigurowanego dostawcy. Weryfikuje uruchamianie procesów, kolejkę i raportowanie.
 
 ## Uruchamianie planów
 
 ```bash
-node bin/pi-many-agents.js run --plan plans/stage-2.json --provider fake --concurrency 2 --retries 1
+node bin/pi-many-agents.js run --plan plans/stage-2.json --provider pi --concurrency 2 --retries 1
 node bin/pi-many-agents.js run --plan plans/stage-next.json --provider pi --concurrency 2
 node bin/pi-many-agents.js graph --plan plans/stage-next.json
 node bin/pi-many-agents.js decompose brief.md --integrate
@@ -57,7 +57,7 @@ node bin/pi-many-agents.js decompose brief.md --integrate
 
 `decompose` wypisuje JSON na stdout. `graph` wypisuje strukturę grafu w JSON. `run` wypisuje status i raporty; raport o statusie `failed` powoduje kod wyjścia 1.
 
-**CLI obecnie domyślnie wybiera `fake` i ignoruje pole `provider` na poziomie planu.** Aby wykonać realną pracę, podaj jawnie `--provider pi` albo nazwę zarejestrowanego profilu. Rozszerzenie `/many` odczytuje to pole planu, lecz ma opisane niżej problemy integracyjne.
+Precedencja dostawcy: flaga CLI `--provider` ma pierwszeństwo, następnie pole `provider` w pliku planu, a na końcu `defaultProvider` z pliku konfiguracyjnego (`pi`).
 
 ## Format zadania
 
@@ -116,8 +116,8 @@ Plik `.pi-many-agents.json` w katalogu uruchomienia:
 ```json
 {
   "maxConcurrentWorkers": 2,
-  "defaultProvider": "fake",
-  "defaultModel": "fake-deterministic",
+  "defaultProvider": "pi",
+  "defaultModel": "claude-sonnet-4-6",
   "defaultTimeoutMs": 120000,
   "maxRetries": 1,
   "unhealthyAfterFailures": 3,
@@ -135,13 +135,12 @@ Plik `.pi-many-agents.json` w katalogu uruchomienia:
 
 Domyślny routing ustala minimalny reasoning: `none` dla `shell` i `inspect`, `low` dla `test`, `review`, `research`, `medium` dla `code` i `other`.
 
-Jawny reasoning `none` jest rozróżniany od braku wartości (niepodana wartość przyjmuje regułę bazową). Precedencja wyboru dostawcy: flaga CLI (`--provider`) > pole `provider` w pliku planu > domyślna wartość w konfiguracji (`fake`).
+Jawny reasoning `none` jest rozróżniany od braku wartości (niepodana wartość przyjmuje regułę bazową). Precedencja wyboru dostawcy: flaga CLI (`--provider`) > pole `provider` w pliku planu > domyślna wartość w konfiguracji (`pi`).
 
 ## Dostawcy i modele
 
 | Adapter / profil | Wykonanie | Ograniczenia |
 | --- | --- | --- |
-| `fake` | Deterministyczny proces testowy | Nie wykonuje pracy semantycznej ani edycji kodu |
 | `pi` | `pi --print --mode json --no-session --no-extensions` | Wymaga lokalnego Pi i dostępnego modelu |
 | Profile Pi | Ten sam adapter z ustawionym dostawcą i modelem | Dostępność profilu sprawdza nazwę dostawcy, nie pełną parę dostawca-model |
 | `qwen4` | Ollama, port 11434 (dynamiczny tag lub z konfiguracji) | Chat tekstowy, brak narzędzi, brak auto-pull |
@@ -206,7 +205,7 @@ Admin panel pozwala uruchomić plan przez daemon IPC i bezpiecznie anulować wyb
 | Katalog | Odpowiedzialność |
 | --- | --- |
 | `src/core` | Zadania, plan, kolejka, orkiestrator, workery, graf, deduplikacja |
-| `src/providers` | Adaptery Fake, Pi, Ollama, Docker Mistral i katalog profili |
+| `src/providers` | Adaptery Pi, Ollama, Docker Model Runner i katalog profili |
 | `src/process` | Uruchamianie procesów, buforowanie stdio, timeout i bezpieczne sprzątanie |
 | `src/protocol` | Zdarzenia JSONL, dedykowany protokół IPC i raporty |
 | `src/daemon` | Unix socket IPC i trwały SQLite store z obsługą `runId` |

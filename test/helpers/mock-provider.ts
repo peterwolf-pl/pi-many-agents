@@ -1,18 +1,18 @@
 import { fileURLToPath } from "node:url";
-import { ProcessManager } from "../process/process-manager.ts";
-import { parseReportPayload, wrapTextReport } from "../protocol/report.ts";
-import type { AgentTask, ProviderCapabilities, WorkerConfig, WorkerHandle } from "../types.ts";
-import type { AgentProvider, ProviderRunResult } from "./types.ts";
+import { ProcessManager } from "../../src/process/process-manager.ts";
+import { parseReportPayload, wrapTextReport } from "../../src/protocol/report.ts";
+import type { AgentTask, ProviderCapabilities, WorkerConfig, WorkerHandle } from "../../src/types.ts";
+import type { AgentProvider, ProviderRunResult } from "../../src/providers/types.ts";
 
-export class FakeProvider implements AgentProvider {
-  readonly name = "fake";
+export class MockProvider implements AgentProvider {
+  readonly name: string;
   private readonly processes = new ProcessManager();
   private readonly activeAbortControllers = new Map<string, AbortController>();
   private seq = 0;
-
   private readonly signal?: AbortSignal;
 
-  constructor(signal?: AbortSignal) {
+  constructor(name = "mock", signal?: AbortSignal) {
+    this.name = name;
     this.signal = signal;
   }
 
@@ -36,7 +36,7 @@ export class FakeProvider implements AgentProvider {
   }
 
   async execute(worker: WorkerHandle, task: AgentTask): Promise<ProviderRunResult> {
-    const script = fileURLToPath(new URL("./fake-worker.ts", import.meta.url));
+    const script = fileURLToPath(new URL("./mock-worker.ts", import.meta.url));
     const started = Date.now();
 
     const workerAc = new AbortController();

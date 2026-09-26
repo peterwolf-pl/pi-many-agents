@@ -172,7 +172,7 @@ export class DashboardApp {
   private async handleNewRun(planPath?: string): Promise<void> {
     try {
       let tasks: AgentTask[];
-      let provider: string | undefined = "fake";
+      let provider: string | undefined = "pi";
       let maxConcurrentWorkers: number | undefined = 3;
       let maxRetries: number | undefined = 1;
 
