@@ -1,0 +1,406 @@
+{
+  "stage": "Stage 7 - Dashboard Prompt Planner",
+  "provider": "pi",
+  "concurrency": 3,
+  "maxRetries": 1,
+  "notes": "Add a read-only LLM-assisted Prompt Planner to the terminal dashboard. The user writes a normal-language description of the next job, selects an available planner model, and receives a validated pi-many-agents JSON execution plan. Prefer xai/grok-4.7 when available, but keep model selection generic. Generation must never auto-run work. The dashboard remains a thin daemon IPC client.",
+  "tasks": [
+    {
+      "id": "planner-audit",
+      "title": "Audit dashboard, IPC, provider and plan contracts",
+      "objective": "Inspect the current Stage 6 dashboard flow, daemon IPC request handling, provider registry/catalog, parsePlan/createTask contracts, and the writing-many-agents-prompts skill. Design the smallest Prompt Planner architecture that lets a user enter a free-form brief in the TUI, select a planner model such as xai/grok-4.7, generate a strict executable JSON plan, validate it, preview it, save it under plans/, and explicitly run it. The dashboard must remain a thin IPC client. Generation must use one planner model call, not a nested many-agents run.",
+      "type": "inspect",
+      "priority": 4,
+      "dependencies": [],
+      "relevantFiles": [
+        "src/dashboard/app.ts",
+        "src/dashboard/client.ts",
+        "src/dashboard/input.ts",
+        "src/dashboard/render.ts",
+        "src/dashboard/state.ts",
+        "src/daemon/server.ts",
+        "src/protocol/ipc.ts",
+        "src/core/plan.ts",
+        "src/core/task.ts",
+        "src/providers/catalog.ts",
+        "src/providers/pi.ts",
+        "src/config/config.ts",
+        "src/index.ts",
+        "skills/writing-many-agents-prompts/SKILL.md",
+        "skills/writing-many-agents-prompts/REFERENCE.md",
+        "plans"
+      ],
+      "constraints": [
+        "Do not modify Pi core.",
+        "Do not add a web UI or Electron.",
+        "Do not let the dashboard write plans directly to disk; generation/save operations go through daemon IPC.",
+        "Do not use an orchestrated multi-worker run just to generate one prompt.",
+        "Prefer reuse of ProviderRegistry/catalog and existing provider capability checks.",
+        "xai/grok-4.7 is a preferred planner profile when available, not a hard dependency."
+      ],
+      "expectedOutput": "A concrete data-flow map and minimal API design for planner.generate, planner.save, plan preview, model selection, validation, and explicit run-now behavior.",
+      "modelPolicy": {
+        "reasoning": "low",
+        "timeoutMs": 120000
+      },
+      "permissions": {
+        "read": true,
+        "write": false,
+        "shell": false,
+        "network": false,
+        "git": false
+      }
+    },
+    {
+      "id": "planner-core-red",
+      "title": "Write failing Prompt Planner core tests",
+      "objective": "Add RED tests for a provider-neutral Prompt Planner core. Cover planner request validation, strict prompt construction from the user's brief plus repository contract files, xai/grok-4.7 preference without making xai mandatory, pure/read-only planner task permissions, robust extraction of a JSON object from plain text or fenced model output, parsePlan validation, one bounded repair attempt after invalid output, semantic warnings, and a compact plan summary. The planner must never execute generated tasks while generating them.",
+      "type": "test",
+      "priority": 5,
+      "dependencies": [
+        "planner-audit"
+      ],
+      "relevantFiles": [
+        "src/core/plan.ts",
+        "src/core/task.ts",
+        "src/providers/catalog.ts",
+        "src/providers/provider.ts",
+        "src/types.ts",
+        "skills/writing-many-agents-prompts/SKILL.md",
+        "skills/writing-many-agents-prompts/REFERENCE.md"
+      ],
+      "writeScope": [
+        "test/prompt-planner.test.ts"
+      ],
+      "constraints": [
+        "TDD only: do not add production implementation in this task.",
+        "Tests must not require a real xAI/OpenAI/Ollama service.",
+        "Mock the provider boundary, not parsePlan itself.",
+        "Verify that planner tasks use read=true, write=false, shell=false, network=false, git=false.",
+        "Verify that invalid generated JSON is not silently accepted.",
+        "Verify that the repair loop is capped at one retry."
+      ],
+      "expectedOutput": "A new prompt-planner core test file with controlled RED failures that identify missing planner behavior.",
+      "modelPolicy": {
+        "reasoning": "medium",
+        "timeoutMs": 180000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "planner-ipc-red",
+      "title": "Write failing Prompt Planner IPC and save tests",
+      "objective": "Add RED tests for new daemon IPC operations planner.generate and planner.save. planner.generate accepts a user brief, selected provider/profile/model, optional reasoning and workspace, invokes the planner service, and returns raw JSON plus parsed summary, validation warnings and usage. planner.save saves only a previously validated plan below the configured plans directory using a sanitized generated or user-supplied filename. Reject absolute paths and path traversal. Ensure dashboard client requests can use a planner-specific timeout longer than the current generic 5 second request timeout.",
+      "type": "test",
+      "priority": 5,
+      "dependencies": [
+        "planner-audit"
+      ],
+      "relevantFiles": [
+        "src/protocol/ipc.ts",
+        "src/daemon/server.ts",
+        "src/dashboard/client.ts",
+        "src/config/config.ts",
+        "test/daemon-client.test.ts",
+        "test/daemon.test.ts"
+      ],
+      "writeScope": [
+        "test/prompt-planner-ipc.test.ts"
+      ],
+      "constraints": [
+        "TDD only: do not implement production IPC code in this task.",
+        "No real LLM calls in tests.",
+        "planner.generate must not run the returned plan.",
+        "planner.save must never escape the configured plans directory.",
+        "Do not weaken the existing 10 MB IPC line protection."
+      ],
+      "expectedOutput": "RED IPC tests covering request parsing, daemon dispatch, client timeout behavior, safe save paths and non-execution guarantees.",
+      "modelPolicy": {
+        "reasoning": "medium",
+        "timeoutMs": 180000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "planner-ui-red",
+      "title": "Write failing dashboard Prompt Planner UX tests",
+      "objective": "Add RED tests for a dashboard Prompt Planner mode. Outside the modal, key p opens the planner without changing existing q/r/n/a/x/u/scroll/select behavior. Inside the planner, normal printable typing edits a multiline user brief, Enter inserts a newline, Backspace edits, Esc closes, F2 generates, F3 cycles available planner models, F4 saves a valid generated plan, and F5 explicitly runs a valid generated plan. Test states input, generating, preview, saving, error and ready. Test wide and 80x24 rendering plus graceful behavior in tiny terminals. Test that user/model text is sanitized before rendering.",
+      "type": "test",
+      "priority": 5,
+      "dependencies": [
+        "planner-audit"
+      ],
+      "relevantFiles": [
+        "src/dashboard/input.ts",
+        "src/dashboard/state.ts",
+        "src/dashboard/render.ts",
+        "src/dashboard/app.ts",
+        "test/dashboard.test.ts",
+        "test/dashboard-render.test.ts"
+      ],
+      "writeScope": [
+        "test/prompt-planner-dashboard.test.ts"
+      ],
+      "constraints": [
+        "TDD only: do not implement dashboard production code in this task.",
+        "Preserve existing Stage 6 shortcuts outside planner mode.",
+        "Do not use Ctrl+Enter as the only submit action because terminal support is inconsistent.",
+        "Do not auto-run after generation.",
+        "The preview may be summarized, but the exact generated JSON must remain available for save/run."
+      ],
+      "expectedOutput": "RED dashboard tests for keyboard behavior, state transitions, responsive rendering, sanitization and explicit user control.",
+      "modelPolicy": {
+        "reasoning": "medium",
+        "timeoutMs": 180000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "planner-core-implementation",
+      "title": "Implement provider-neutral Prompt Planner core",
+      "objective": "Implement the Prompt Planner service needed by prompt-planner core tests. Add a small src/planner module that builds a single read-only AgentTask for plan generation, uses the existing registered provider/profile abstraction instead of spawning a nested orchestrator run, and returns PlannerResult containing rawPlanJson, parsed plan, summary, warnings, provider/model/reasoning and accumulated usage. The model instruction must incorporate the repository's writing-many-agents-prompts skill and exact executable plan contract. Require JSON output only. Extract a top-level JSON object safely from plain or fenced output, validate with parsePlan, perform semantic checks that parsePlan does not cover, and allow at most one automatic repair call with validation errors fed back to the same model. The planner must never modify files, run shell, use git, or execute the generated plan.",
+      "type": "code",
+      "priority": 5,
+      "dependencies": [
+        "planner-core-red"
+      ],
+      "relevantFiles": [
+        "src/providers/provider.ts",
+        "src/providers/catalog.ts",
+        "src/providers/pi.ts",
+        "src/core/plan.ts",
+        "src/core/task.ts",
+        "src/types.ts",
+        "src/config/config.ts",
+        "skills/writing-many-agents-prompts/SKILL.md",
+        "skills/writing-many-agents-prompts/REFERENCE.md",
+        "test/prompt-planner.test.ts"
+      ],
+      "writeScope": [
+        "src/planner",
+        "src/config/config.ts",
+        "src/types.ts",
+        "test/prompt-planner.test.ts"
+      ],
+      "constraints": [
+        "Prefer xai/grok-4.7 when it is configured and available, but expose generic provider/model selection and never pretend an unavailable model is usable.",
+        "Default planner reasoning should be medium unless config overrides it.",
+        "Use one model call plus at most one repair call.",
+        "No shell, write, network or git permissions for the planner task.",
+        "Do not count planner activity as a normal orchestrated run.",
+        "Return actual planner token usage/cost when the provider reports it; do not invent cost.",
+        "Semantic validation must detect at least duplicate IDs/dependency issues via parsePlan and additionally warn about overlapping parallel writeScope, impossible read-only/write combinations, unsupported provider assumptions and missing final verification when applicable.",
+        "Do not reject useful plans only because they have warnings; distinguish validation errors from warnings."
+      ],
+      "expectedOutput": "GREEN prompt-planner core tests with a compact reusable planner service and no provider-specific dashboard logic.",
+      "modelPolicy": {
+        "reasoning": "high",
+        "timeoutMs": 360000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "planner-ipc-implementation",
+      "title": "Implement Prompt Planner daemon IPC",
+      "objective": "Implement planner.generate and planner.save across protocol, daemon and dashboard client. The daemon owns provider access and filesystem writes. planner.generate resolves the selected planner provider/profile/model from the same provider registry/catalog used by normal execution, calls the Prompt Planner core, and returns a structured PlannerResult. planner.save accepts only validated plan JSON/result data, sanitizes the filename, confines writes below the plans directory, writes UTF-8 formatted JSON, and returns the final path. Extend DashboardIpcClient.request with an optional per-request timeout so planner.generate can wait for the configured planner timeout without changing normal 5 second dashboard requests.",
+      "type": "code",
+      "priority": 5,
+      "dependencies": [
+        "planner-ipc-red",
+        "planner-core-implementation"
+      ],
+      "relevantFiles": [
+        "src/protocol/ipc.ts",
+        "src/daemon/server.ts",
+        "src/dashboard/client.ts",
+        "src/index.ts",
+        "src/config/config.ts",
+        "src/planner",
+        "test/prompt-planner-ipc.test.ts"
+      ],
+      "writeScope": [
+        "src/protocol/ipc.ts",
+        "src/daemon/server.ts",
+        "src/dashboard/client.ts",
+        "src/index.ts",
+        "src/config/config.ts",
+        "test/prompt-planner-ipc.test.ts"
+      ],
+      "constraints": [
+        "Dashboard remains a thin IPC client.",
+        "Do not expose arbitrary filesystem write paths.",
+        "Reject ../, absolute paths and path separators in user filenames.",
+        "Do not execute a generated plan in planner.generate or planner.save.",
+        "Keep existing run/abort/status/dashboard.snapshot/run.details/providers.status behavior compatible.",
+        "planner.generate timeout must derive from planner config/request and include bounded overhead for one repair attempt."
+      ],
+      "expectedOutput": "GREEN Prompt Planner IPC tests and backward-compatible daemon/dashboard IPC behavior.",
+      "modelPolicy": {
+        "reasoning": "high",
+        "timeoutMs": 360000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "planner-dashboard-implementation",
+      "title": "Implement Prompt Planner TUI flow",
+      "objective": "Implement the dashboard Prompt Planner mode required by the UI tests. Key p opens a dedicated planner modal/screen. The primary area is a multiline 'Describe the next job' editor where the user types normal language. Show the selected planner provider/model, preferring xai/grok-4.7 when available. F3 cycles only available planner choices. F2 sends planner.generate and shows a non-blocking generating state while the normal render loop and daemon connection stay alive. On success, show a readable plan preview: stage, task count, DAG/dependency summary, concurrency, reasoning distribution, provider/model distribution, write scopes, validation warnings, planner tokens/cost if reported, and a scrollable JSON preview. F4 saves through planner.save. F5 explicitly starts the exact validated generated plan using the existing run path. Esc closes without executing anything. Preserve the generated result while the user views it, but invalidate it when the brief or selected planner model changes.",
+      "type": "code",
+      "priority": 5,
+      "dependencies": [
+        "planner-ui-red",
+        "planner-ipc-implementation"
+      ],
+      "relevantFiles": [
+        "src/dashboard/app.ts",
+        "src/dashboard/client.ts",
+        "src/dashboard/input.ts",
+        "src/dashboard/render.ts",
+        "src/dashboard/state.ts",
+        "src/daemon/store.ts",
+        "test/prompt-planner-dashboard.test.ts",
+        "test/dashboard.test.ts",
+        "test/dashboard-render.test.ts"
+      ],
+      "writeScope": [
+        "src/dashboard",
+        "test/prompt-planner-dashboard.test.ts",
+        "test/dashboard.test.ts",
+        "test/dashboard-render.test.ts"
+      ],
+      "constraints": [
+        "Outside planner mode all existing Stage 6 controls must keep working.",
+        "Use a richer key event shape if needed so function keys/modifiers are not lost, but preserve backward compatibility for existing handleKey tests.",
+        "Enter inserts a newline in the brief. F2 generate, F3 model, F4 save, F5 run, Esc close.",
+        "Do not auto-run after generation or save.",
+        "Do not add a heavy TUI framework solely for this feature.",
+        "Sanitize user brief, model output, warning text and filenames before rendering.",
+        "At 140x40 prefer a split brief/preview layout; at 80x24 use stacked sections; tiny terminals must not crash.",
+        "Show 'INVALID' or actionable validation errors rather than allowing F4/F5 on invalid output.",
+        "When generation is in flight, prevent duplicate F2 requests but allow Esc to return to the dashboard without killing the daemon."
+      ],
+      "expectedOutput": "A usable terminal Prompt Planner integrated with the Stage 6 control room and GREEN dashboard planner tests.",
+      "modelPolicy": {
+        "reasoning": "high",
+        "timeoutMs": 420000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "planner-review-docs",
+      "title": "Review Prompt Planner safety, token use and documentation",
+      "objective": "Review the complete Prompt Planner flow end to end and update documentation. Confirm the planner is read-only, dashboard-to-daemon boundaries are preserved, generated plans pass parsePlan before save/run, semantic warnings are visible, save paths are confined to plans/, xai/grok-4.7 is preferred but not required, unavailable models are not silently substituted, no generation automatically executes work, planner usage is shown separately from normal run usage, and one repair attempt is the maximum. Document keyboard controls and configuration.",
+      "type": "review",
+      "priority": 4,
+      "dependencies": [
+        "planner-dashboard-implementation"
+      ],
+      "relevantFiles": [
+        "README.md",
+        "docs/architecture.md",
+        "docs/decisions",
+        "src/planner",
+        "src/dashboard",
+        "src/daemon",
+        "src/protocol",
+        "src/providers",
+        "src/config/config.ts"
+      ],
+      "writeScope": [
+        "README.md",
+        "docs"
+      ],
+      "constraints": [
+        "Do not claim direct Grok API integration; the current xai profile runs through the existing Pi provider/profile path.",
+        "Document any limitation for text-only local adapters explicitly.",
+        "Keep documentation concise and implementation-oriented."
+      ],
+      "expectedOutput": "Updated README/ADR documentation plus a concise review report listing any fixed or remaining issues.",
+      "modelPolicy": {
+        "reasoning": "medium",
+        "timeoutMs": 180000
+      },
+      "permissions": {
+        "read": true,
+        "write": true,
+        "shell": true,
+        "network": false,
+        "git": true
+      }
+    },
+    {
+      "id": "verify-stage-7",
+      "title": "Run complete Stage 7 verification",
+      "objective": "Run fresh project quality gates after the Prompt Planner implementation. Execute npm test, npm run typecheck, npm run lint and npm run demo. Add targeted Prompt Planner tests if they are not already included by npm test. If a real TTY and xai/grok-4.7 are available, manually smoke-test: open dashboard, press p, type a multiline brief, F2 generate, inspect preview, F4 save, and separately confirm F5 requires explicit action before a run starts. If xai is unavailable, use another available Pi profile only for the manual smoke and report xai as NOT VERIFIED. If no interactive TTY/provider is available, mark only those manual checks NOT VERIFIED rather than fabricating PASS.",
+      "type": "test",
+      "priority": 5,
+      "dependencies": [
+        "planner-review-docs"
+      ],
+      "relevantFiles": [
+        "package.json",
+        "src/planner",
+        "src/dashboard",
+        "src/daemon",
+        "src/protocol",
+        "test"
+      ],
+      "constraints": [
+        "Do not report PASS without fresh command output.",
+        "Do not hide pre-existing failures.",
+        "Verify no plan is executed by F2 generation or F4 save.",
+        "Verify saved filenames cannot escape plans/.",
+        "Verify existing n new-run, abort, refresh, usage toggle, activity scroll and details flows still work.",
+        "Report exact test counts and any NOT VERIFIED manual conditions."
+      ],
+      "expectedOutput": "Final verification report with command outputs, test counts, manual smoke status, provider used for smoke, and any remaining limitations.",
+      "modelPolicy": {
+        "reasoning": "low",
+        "timeoutMs": 600000
+      },
+      "permissions": {
+        "read": true,
+        "write": false,
+        "shell": true,
+        "network": false,
+        "git": false
+      }
+    }
+  ]
+}
