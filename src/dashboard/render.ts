@@ -41,7 +41,7 @@ export function render(state: DashboardState): string {
 
   // Header
   const daemonStatus = state.daemon.status.toUpperCase();
-  const header = `PI MANY AGENTS  |  DAEMON ${daemonStatus}  |  runs ${state.runs.length}  |  tasks run ${state.daemon.pid ?? ""}  |  ${formatTime(state.daemon.lastRefresh)}`;
+  const header = `PI MANY AGENTS  |  DAEMON ${daemonStatus}  |  runs ${state.runs.length}  |  pid ${state.daemon.pid ?? "-"}  |  ${formatTime(state.daemon.lastRefresh)}`;
   lines.push(pad(sanitize(header), cols));
   lines.push(pad("", cols, true)); // spacer
 
@@ -106,7 +106,11 @@ function renderRunsPanel(state: DashboardState, w: number, h: number): string {
   const selected = state.selectedRunId;
   const runLines = state.runs.slice(0, h - 3).map((r, i) => {
     const sel = r.id === selected ? ">" : " ";
-    const t = `${sel} ${r.id.slice(0, 12)} ${r.state.padEnd(9)} ${elapsed(Date.now() - r.createdAt).padEnd(6)} tasks:${r.taskCount ?? 0}`;
+    const runDuration =
+      r.state === "running"
+        ? Date.now() - r.createdAt
+        : Math.max(0, (r.updatedAt ?? r.createdAt) - r.createdAt);
+    const t = `${sel} ${r.id.slice(0, 12)} ${r.state.padEnd(10)} ${elapsed(runDuration).padEnd(6)} tasks:${r.taskCount ?? 0}`;
     return `${BOX.v}${pad(sanitize(t), w - 2)}${BOX.v}`;
   });
   rows.push(...runLines);

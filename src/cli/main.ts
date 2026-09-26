@@ -37,7 +37,7 @@ pi-many-agents dashboard [--inline] [--new-window]
     await startDaemon();
     return;
   }
-  if (command === "dashboard") {
+  if (command === "dashboard" || command === "dashboar" || command === "dash") {
     const inline = rest.includes("--inline");
     const newWindow = rest.includes("--new-window");
     const launch = launchDashboard({ cwd: process.cwd(), inline, newWindow });

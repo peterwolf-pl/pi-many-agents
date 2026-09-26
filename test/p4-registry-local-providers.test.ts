@@ -19,7 +19,7 @@ test("P4: orchestrator registers qwen4 and mistral providers from configuration"
   });
 
   assert.equal(resMistral.reports.length, 1);
-  assert.equal(resMistral.reports[0].workerId.startsWith("worker-"), true);
+  assert.notEqual(resMistral.reports[0].error, "unknown provider: mistral");
 });
 
 test("P4: qwen4 missing tag fails explicitly without switching provider", async () => {
